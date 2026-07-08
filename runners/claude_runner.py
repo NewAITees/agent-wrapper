@@ -8,6 +8,15 @@ claude-agent-sdk経由で実際のClaude Codeを動かすrunner。
   ollama_client.explain_operation()で内容を説明した上で必ず人間の承認を待つ。
   一致しなければollama_client.judge_permission()の一次判定を経て、ALLOWならそのまま
   続行、そうでなければ同様に説明文を添えて人間の承認を待つ。
+- ClaudeSDKClient(query()ではなく)を使い、Claudeがツール呼び出しではなく会話文で
+  「y/nで確認してください」等の返答を求めてきた場合は、
+  ollama_client.answer_conversational_question()に短い返答を生成させ、
+  追加ターンとして送り返す(最大_MAX_CONVERSATIONAL_TURNS回)。この会話応答は
+  あくまで「進めてよいか」という相槌への一次対応であり、実際のツール実行の安全性は
+  PreToolUse/can_use_tool側のrules.check_destructive()判定で別途担保される。
+- setting_sources=["project"] を指定し、この操作者個人のグローバル設定
+  (~/.claude/CLAUDE.md等)がラップ対象の(無関係な)セッションに紛れ込まないようにする。
+  ターゲットプロジェクト自身の.claude/settings.json・CLAUDE.mdは尊重する。
 - AgentWrapper(wrapper.py, mock/subprocess方式)と同じ公開インターフェース
   (start/approve/deny/stop)を持ち、dashboard.py/main.pyから透過的に扱える。
 
@@ -20,10 +29,8 @@ claude-agent-sdk経由で実際のClaude Codeを動かすrunner。
 
 import asyncio
 import threading
-from collections.abc import AsyncIterator
-from typing import Any
 
-from claude_agent_sdk import ClaudeAgentOptions, HookMatcher, query
+from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, HookMatcher
 from claude_agent_sdk.types import (
     AssistantMessage,
     HookContext,
@@ -50,6 +57,8 @@ class ClaudeRunner:
     関連: SharedState(wrapper.py), rules.py(検知ルール),
     ollama_client.py(一次判定/説明), tool_describe.py(ツール呼び出しの文字列化)。
     """
+
+    _MAX_CONVERSATIONAL_TURNS = 5
 
     def __init__(
         self,
@@ -91,17 +100,41 @@ class ClaudeRunner:
                     HookMatcher(matcher=_GATED_MATCHER, hooks=[self._pre_tool_use_hook])  # type: ignore[list-item]
                 ]
             },
+            setting_sources=["project"],
         )
-        async for message in query(prompt=self._prompt_stream(), options=options):
-            self._handle_message(message)
+        async with ClaudeSDKClient(options=options) as client:
+            await client.query(self.prompt)
+            await self._converse(client)
 
-    async def _prompt_stream(self) -> AsyncIterator[dict[str, Any]]:
-        yield {
-            "type": "user",
-            "message": {"role": "user", "content": self.prompt},
-            "parent_tool_use_id": None,
-            "session_id": "agent_wrapper",
-        }
+    async def _converse(self, client: ClaudeSDKClient) -> None:
+        """応答を読み、Claudeが会話文で確認を求めてきたらollamaに回答させて送り返す。"""
+        for _ in range(self._MAX_CONVERSATIONAL_TURNS):
+            last_text = self._read_turn(await self._collect_turn(client))
+            if not last_text:
+                return
+            answer = ollama_client.answer_conversational_question(
+                last_text, model=self.ollama_model
+            )
+            if answer is None:
+                return
+            self.state.append_log(f"(ollamaが会話上の確認に回答: {answer})")
+            await client.query(answer)
+
+    async def _collect_turn(self, client: ClaudeSDKClient) -> list[object]:
+        messages: list[object] = []
+        async for message in client.receive_response():
+            self._handle_message(message)
+            messages.append(message)
+        return messages
+
+    def _read_turn(self, messages: list[object]) -> str:
+        last_text = ""
+        for message in messages:
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock):
+                        last_text = block.text
+        return last_text
 
     def _handle_message(self, message: object) -> None:
         if isinstance(message, AssistantMessage):

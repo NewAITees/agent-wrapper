@@ -75,6 +75,34 @@ def explain_operation(context: str, model: str = DEFAULT_MODEL) -> str:
         return f"(説明生成に失敗しました: {e})"
 
 
+def answer_conversational_question(text: str, model: str = DEFAULT_MODEL) -> str | None:
+    """
+    エージェントが会話文で(ツール呼び出しではなく)実行の可否等について
+    人間の返答を求めているかを判定し、そうであればそのまま送り返せる
+    短い返答文を生成する。単なる完了報告・状況説明であればNoneを返す。
+
+    注意: これはあくまで会話上の相槌に対する一次対応であり、実際のツール実行の
+    安全性はPreToolUseフック/can_use_toolによるrules.check_destructive()・
+    judge_permission()の判定で別途担保される(このNone以外の返答がAllowに
+    直結するわけではない)。
+    """
+    prompt = (
+        "コーディングエージェントが次のように発言しました。"
+        "これが実行の可否や次の一歩について人間の返答を求めている質問であれば、"
+        "そのまま送り返せる短い返答(例: y、はい、続けてください 等)を1行で返してください。"
+        "単なる完了報告・状況説明で返答を必要としていなければ、"
+        "NOT_A_QUESTION とだけ返してください。\n\n"
+        f"{text}"
+    )
+    try:
+        result = _generate(model, prompt).strip()
+    except Exception:
+        return None
+    if not result or "NOT_A_QUESTION" in result.upper():
+        return None
+    return result
+
+
 def judge_is_major_decision(context: str, model: str = DEFAULT_MODEL) -> bool:
     prompt = (
         "次の発言や状況は、設計方針や大きな意思決定に関わる相談でしょうか。"
