@@ -3,9 +3,19 @@ LAN内のブラウザから状態確認・ログ閲覧・承認操作ができ�
 Mac / iPad / Android のブラウザから http://<WSL2のIP>:8765/ でアクセスする想定。
 """
 
+from typing import Protocol
+
 from flask import Flask, Response, jsonify, request, render_template_string
 
-from .wrapper import AgentWrapper, SharedState
+from .wrapper import SharedState
+
+
+class Approvable(Protocol):
+    """AgentWrapper/ClaudeRunnerが共通で持つ、ダッシュボードから呼ばれる操作。"""
+
+    def approve(self) -> None: ...
+    def deny(self) -> None: ...
+
 
 PAGE = """
 <!doctype html>
@@ -62,7 +72,7 @@ setInterval(refresh, 3000);
 """
 
 
-def make_app(agent_wrapper: AgentWrapper, state: SharedState) -> Flask:
+def make_app(agent_wrapper: Approvable, state: SharedState) -> Flask:
     app = Flask(__name__)
 
     @app.route("/")

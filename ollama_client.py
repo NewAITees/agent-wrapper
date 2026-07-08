@@ -57,6 +57,24 @@ def judge_permission(context: str, model: str = DEFAULT_MODEL) -> dict[str, str]
     return {"decision": decision, "raw": result}
 
 
+def explain_operation(context: str, model: str = DEFAULT_MODEL) -> str:
+    """
+    人間が承認するかどうか判断できるよう、操作内容を日本語で説明する。
+    ALLOW/ESCALATEの判定は行わない(判定はjudge_permission/ルールエンジン側の責務)。
+    """
+    prompt = (
+        "コーディングエージェントが次の操作を行おうとしています。"
+        "人間が承認するかどうか判断できるよう、何をする操作で、"
+        "何に影響するかを日本語で1〜2文、簡潔に説明してください。"
+        "許可すべきかどうかの判定は不要です。説明文だけを返してください。\n\n"
+        f"操作内容: {context}"
+    )
+    try:
+        return _generate(model, prompt)
+    except Exception as e:
+        return f"(説明生成に失敗しました: {e})"
+
+
 def judge_is_major_decision(context: str, model: str = DEFAULT_MODEL) -> bool:
     prompt = (
         "次の発言や状況は、設計方針や大きな意思決定に関わる相談でしょうか。"
