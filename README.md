@@ -60,30 +60,48 @@ netsh advfirewall firewall add rule name="AgentWrapperDashboard" dir=in action=a
 3. 環境変数に設定してから起動する(シェルのプロファイルに書いておくと毎回入力しなくて済む)
    ```bash
    export AGENT_WRAPPER_NTFY_TOPIC="<自分で生成したトピック名>"
-   agent-wrapper --agent claude
+   agent-wrapper --agent claude --prompt "READMEを読んで要約して"
    ```
    または毎回 `--ntfy-topic <トピック名>` を付けてもよい。
 
 優先度は破壊的操作/停止要求が urgent(5、音あり)、権限確認/方針決定が default(3)、定期チェックインが min(1、サイレント)にマッピングされる。
 
-## 実際のClaude Code / Codexに繋ぐとき
+## 実際のClaude Codeに繋ぐとき(`--agent claude`)
 
-`main.py` の `AGENT_COMMANDS` にある `claude` と `codex` のコマンドは仮のものなので、お使いのバージョンに合わせて調整してほしい。ヘッドレスモード(`claude -p`)を前提にしているが、対話モードで動かしたい場合は標準入出力のやり取りが変わるため、`wrapper.py` の `_send_to_stdin` まわりを見直す必要があると思う。
+`--agent mock`/`--agent codex` はサブプロセス+標準出力の文字列解析(`wrapper.py`)で動くが、
+`--agent claude` だけは仕組みが異なり、公式の `claude-agent-sdk` 経由で実際の `claude` バックエンドに
+接続する(`agent_wrapper/runners/claude_runner.py` の `ClaudeRunner`)。認証は既存の `claude` CLIログイン
+(Claude Codeサブスクリプション)をそのまま使う(`ANTHROPIC_API_KEY` は不要、従量課金にはならない)。
 
-エージェント自身に意思表示させるための合図は、CLAUDE.md・AGENTS.mdに次のようなルールとして書いておくとよい。
-
-```text
-権限確認が必要な操作の前には、行の先頭に「::REQUEST_PERMISSION:: 」を付けて内容を一行で書くこと。
-設計判断や不可逆な選択について相談したいときは、「::REQUEST_STOP:: 」を付けて内容を書き、
-人間の回答を待つこと。
+```bash
+agent-wrapper --agent claude --prompt "READMEを読んで要約して"
+# または
+agent-wrapper --agent claude --prompt-file ./task.md
 ```
+
+`--prompt` か `--prompt-file` のどちらかが必須(未指定だとエラーで起動しない)。ヘッドレスで一度きりの
+指示を渡す形式で、CLAUDE.md・AGENTS.mdに `::REQUEST_PERMISSION::`/`::REQUEST_STOP::` のようなマーカーを
+書いてもらう必要は**ない**(このマーカー方式は `--agent mock` 専用)。`--agent claude` では次の仕組みで
+自動的に全てのツール呼び出しを横取りする:
+
+1. `Bash`/`Write`/`Edit` の呼び出しは、Claude自身の判断に関わらず必ず `PreToolUse` フックで捕捉される
+2. `rules.check_destructive()` に一致すれば、`ollama_client.explain_operation()` で内容を説明した上で必ず人間の承認待ちになる(ollamaの判定は経由しない)
+3. 一致しなければ `ollama_client.judge_permission()` の一次判定を経て、安全ならそのまま続行、そうでなければ同様に人間の承認待ちになる
+4. Claudeがツール呼び出しではなく会話文で「進めてよいですか」のように尋ねてきた場合も、`ollama_client.judge_conversational_question()` が内容を読んでALLOW/ESCALATEを判定し、危険そうならここでも人間の承認待ちになる(内容を評価せず機械的に「y」と答えるわけではない)
 
 ### パッケージインストール・外部コード取得は常に人間確認
 
 `npm install` / `pip install` / `uv add` / `cargo install` / `git clone` / `docker pull` / `docker run` などは、
-`rules.py` の `DESTRUCTIVE_PATTERNS` に含めてあるため、エージェントが `::REQUEST_PERMISSION::` で自己申告しても
-ollamaの一次判定を経由せず、`rm -rf` などと同じく問答無用で人間の承認待ちになる。ウイルスや信頼できないコードの
-インストール・取得を自動承認させないための安全弁で、新しいパッケージマネージャに対応させたい場合はここにパターンを足す。
+`rules.py` の `DESTRUCTIVE_PATTERNS` に含めてあるため、`--agent mock` では `::REQUEST_PERMISSION::` の自己申告
+経由でも、`--agent claude` では `PreToolUse`/`can_use_tool` 経由でも、ollamaの一次判定を経由せず`rm -rf` などと
+同じく問答無用で人間の承認待ちになる。ウイルスや信頼できないコードのインストール・取得を自動承認させないための
+安全弁で、新しいパッケージマネージャに対応させたい場合はここにパターンを足す。
+
+## 実際のCodexに繋ぐとき
+
+`--agent codex` は `main.py` の `AGENT_COMMANDS["codex"]`(`codex exec`)をサブプロセスとして起動するだけの
+仮実装で、`--agent claude` のような `PreToolUse`/`can_use_tool` 相当の構造化ゲートはまだない。`openai-codex`
+Python SDK(ベータ版)の承認コールバックAPIを調査した上での対応は今後の課題(`docs/agent_wrapper_sdk_integration_plan.md` 参照)。
 
 ## ollamaとの連携
 
@@ -91,5 +109,7 @@ ollamaの一次判定を経由せず、`rm -rf` などと同じく問答無用�
 
 ## 既知の制限
 
-- `wrapper.py` の `SharedState.approve_event` は単一の `threading.Event` なので、権限確認待ちと定期チェックインの`major_decision`判定が同時にwaiting_humanになると、1回の承認が両方を同時に解除してしまう競合状態がある。デフォルトの `--checkin-interval 600`(10分)なら起きにくいが、短い間隔で使うと再現しうる。
+- `wrapper.py` の `SharedState.approve_event` は単一の `threading.Event` なので、権限確認待ちと定期チェックインの`major_decision`判定が同時にwaiting_humanになると、1回の承認が両方を同時に解除してしまう競合状態がある(`--agent mock`)。デフォルトの `--checkin-interval 600`(10分)なら起きにくいが、短い間隔で使うと再現しうる。
+- `--agent claude`(`ClaudeRunner`)も同種の制限を引き継いでいる: 承認待ちは1件のみを想定しており、複数のツール呼び出し/会話確認が同時にaskへ倒れた場合、片方への承認がもう片方の待機も解除してしまう可能性がある。
+- `--agent claude` は `setting_sources=["project"]` を指定しているが、動作確認したところこの操作者個人のグローバル `~/.claude/CLAUDE.md` が(理由未確定のまま)ラップ対象のセッションに混入することがある。これ自体はエージェントが会話文で確認を求めてくる原因になるだけで、実際のツール実行の安全性(`PreToolUse`/`can_use_tool`)には影響しないが、根本原因は未解決(`docs/agent_wrapper_sdk_integration_plan.md` 参照)。
 - 定期チェックインの「大きな方針決定かどうか」の判定精度は、実際のログで試しながらプロンプトを調整していく必要がある。
