@@ -3,6 +3,7 @@
 ここに引っかかったものは、エージェントが「権限だけ欲しい」と自己申告していても
 問答無用でSTOP(人間確認)に格上げする。
 """
+
 import re
 from dataclasses import dataclass
 
@@ -21,7 +22,7 @@ DESTRUCTIVE_PATTERNS: list[tuple[str, str]] = [
     (r"\bdrop\s+table\b", "DROP TABLE"),
     (r"\bdrop\s+database\b", "DROP DATABASE"),
     (r"\bdel\s+/f\s+/s\s+/q\b", "Windows del /f /s /q による強制削除"),
-    (r"\bformat\s+[a-zA-Z]:\b", "ドライブのフォーマット"),
+    (r"\bformat\s+[a-zA-Z]:", "ドライブのフォーマット"),
     (r"\btruncate\s+table\b", "TRUNCATE TABLE"),
     (r">\s*/dev/sd[a-z]\b", "デバイスへの直接書き込み"),
     # パッケージインストール・外部コード取得系。
@@ -44,7 +45,9 @@ DESTRUCTIVE_PATTERNS: list[tuple[str, str]] = [
     (r"\bdocker\s+run\b", "未知のDockerイメージの実行 (docker run)"),
 ]
 
-_COMPILED = [(re.compile(p, re.IGNORECASE), reason) for p, reason in DESTRUCTIVE_PATTERNS]
+_COMPILED = [
+    (re.compile(p, re.IGNORECASE), reason) for p, reason in DESTRUCTIVE_PATTERNS
+]
 
 
 def check_destructive(line: str) -> RuleMatch:

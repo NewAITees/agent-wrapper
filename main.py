@@ -10,6 +10,7 @@
 LAN外からのアクセスにはWindows Defenderファイアウォールでポートを開ける必要がある
 (詳細はREADME.md参照)。
 """
+
 import argparse
 import os
 import sys
@@ -34,7 +35,9 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--agent", choices=AGENT_COMMANDS.keys(), default="mock")
     parser.add_argument("--ollama-model", default="gemma4:e4b")
-    parser.add_argument("--checkin-interval", type=int, default=600, help="定期チェックインの間隔(秒)")
+    parser.add_argument(
+        "--checkin-interval", type=int, default=600, help="定期チェックインの間隔(秒)"
+    )
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument(
         "--ntfy-topic",

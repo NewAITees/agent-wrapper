@@ -2,6 +2,7 @@
 LAN内のブラウザから状態確認・ログ閲覧・承認操作ができる簡易ダッシュボード。
 Mac / iPad / Android のブラウザから http://<WSL2のIP>:8765/ でアクセスする想定。
 """
+
 from flask import Flask, Response, jsonify, request, render_template_string
 
 from .wrapper import AgentWrapper, SharedState

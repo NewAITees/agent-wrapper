@@ -2,6 +2,7 @@
 ダッシュボードのURLをLAN内の端末(スマホなど)からアクセスしやすくするための表示ヘルパー。
 起動時にターミナルへLAN IPとQRコードを表示する。
 """
+
 import socket
 
 import qrcode
@@ -24,4 +25,7 @@ def print_dashboard_qr(url: str) -> None:
     qr.add_data(url)
     qr.make()
     qr.print_ascii(invert=True)
-    print(f"スマホ/Macからは上のQRコードを読み取るか、次のURLを開いてください: {url}", flush=True)
+    print(
+        f"スマホ/Macからは上のQRコードを読み取るか、次のURLを開いてください: {url}",
+        flush=True,
+    )

@@ -4,6 +4,7 @@
 - 権限確認の合図が来たときの、ルールで白黒つかない場合の一次判定
 - 「大きな方針決定っぽいか」の判定
 """
+
 import requests
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
@@ -47,7 +48,9 @@ def judge_permission(context: str, model: str = DEFAULT_MODEL) -> dict[str, str]
     )
     try:
         result = _generate(model, prompt).strip().upper()
-        decision = "allow" if "ALLOW" in result and "ESCALATE" not in result else "escalate"
+        decision = (
+            "allow" if "ALLOW" in result and "ESCALATE" not in result else "escalate"
+        )
     except Exception as e:
         decision = "escalate"
         result = f"error: {e}"
@@ -63,7 +66,9 @@ def judge_is_major_decision(context: str, model: str = DEFAULT_MODEL) -> bool:
     )
     try:
         result = _generate(model, prompt).strip().upper()
-        return "YES" in result
+        # 明確に「NO」とだけ言っている場合を除き、安全側(人間に聞く)に倒す。
+        # モデルがYES/NO以外の形式で答えた場合も、ここでTrueになる。
+        return not ("NO" in result and "YES" not in result)
     except Exception:
         # ollamaに問い合わせられない場合は安全側(人間に聞く)に倒す
         return True

@@ -4,6 +4,7 @@
 標準出力とログファイルへの記録に加えて、ntfy_topic が指定されていれば
 ntfy.sh(https://ntfy.sh)経由でMac/iPad/Androidへプッシュ通知する。
 """
+
 import datetime
 from collections.abc import Callable
 
@@ -47,4 +48,5 @@ def make_notifier(
             pass
         if ntfy_topic:
             send_ntfy(ntfy_topic, level, title, body)
+
     return send

@@ -2,6 +2,7 @@
 ラッパーの動作確認用の疑似エージェント。
 実際のclaude/codexの代わりに、いくつかの典型的な出力パターンを流す。
 """
+
 import sys
 import time
 
@@ -9,6 +10,9 @@ LINES = [
     "作業開始: リファクタリング対象のファイルを確認しています",
     "src/main.py を編集しました",
     "テストを実行しています...",
+    # DESTRUCTIVE_PATTERNSに一致しない、純粋にollamaの一次判定だけを通る例。
+    "::REQUEST_PERMISSION:: README.mdの内容を確認してよいか",
+    "README.mdを読み込みました",
     "::REQUEST_PERMISSION:: npm install lodash を実行してよいか",
     "依存関係を追加しました",
     "rm -rf build/ を実行しようとしています",

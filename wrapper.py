@@ -9,6 +9,7 @@ Claude Code / Codex をサブプロセスとして起動し、出力を監視す
 - 一定間隔でollamaに要約させ、状態として保持する
 - ダッシュボード(dashboard.py)から参照される共有状態(SharedState)を更新する
 """
+
 import collections
 import datetime
 import subprocess
@@ -30,7 +31,9 @@ class SharedState:
         self.log: collections.deque[str] = collections.deque(maxlen=log_maxlen)
         self.status = "starting"  # starting | running | waiting_human | stopped
         self.pending_reason: str | None = None  # 人間の判断待ちの理由
-        self.pending_kind: str | None = None  # "destructive" | "stop_request" | "major_decision"
+        self.pending_kind: str | None = (
+            None  # "destructive" | "stop_request" | "major_decision"
+        )
         self.last_summary: str | None = None
         self.last_summary_time: str | None = None
         self.process: subprocess.Popen[str] | None = None
@@ -74,6 +77,17 @@ class SharedState:
 
 
 class AgentWrapper:
+    """subprocess+正規表現方式でエージェントを監視する現行実装。
+
+    関連: SharedState(同モジュール), rules.py(検知ルール), ollama_client.py(一次判定),
+    dashboard.py/notifier.py(このクラスの状態を参照する側)。
+
+    この方式は mock_agent.py には機能するが、実際の claude/codex CLI には
+    ヘッドレスモードの制約上そのままでは機能しない(設計ドキュメント参照:
+    docs/agent_wrapper_sdk_integration_plan.md)。claude/codexへの本統合は
+    SDKベースの別実装(agent_wrapper/runners/、未着手)に置き換える計画。
+    """
+
     def __init__(
         self,
         cmd: list[str],
@@ -131,11 +145,15 @@ class AgentWrapper:
         # 2. エージェント自身の意思表示
         kind, content = rules.parse_agent_signal(line)
         if kind == "stop":
-            self.state.set_waiting("stop_request", content or "エージェントが停止を要求")
+            self.state.set_waiting(
+                "stop_request", content or "エージェントが停止を要求"
+            )
             self.notifier("high", "エージェントが停止を要求", content or "")
             self._wait_for_approval()
         elif kind == "permission":
-            judged = ollama_client.judge_permission(content or "", model=self.ollama_model)
+            judged = ollama_client.judge_permission(
+                content or "", model=self.ollama_model
+            )
             if judged["decision"] == "allow":
                 self._send_to_stdin("y\n")
                 self.state.append_log(f"(ollama自動承認: {content})")
@@ -165,18 +183,27 @@ class AgentWrapper:
 
     def _send_to_stdin(self, text: str) -> None:
         try:
-            assert self.state.process is not None and self.state.process.stdin is not None
+            assert (
+                self.state.process is not None and self.state.process.stdin is not None
+            )
             self.state.process.stdin.write(text)
             self.state.process.stdin.flush()
         except Exception as e:
             self.state.append_log(f"(stdin書き込み失敗: {e})")
 
     def approve(self) -> None:
-        """ダッシュボードからの承認操作"""
+        """ダッシュボードからの承認操作。待機中でなければ何もしない(誤操作でのstdin書き込みを防ぐ)。"""
+        if self.state.snapshot()["status"] != "waiting_human":
+            return
+        self.state.append_log("(人間が承認しました)")
         self._send_to_stdin("y\n")
         self.state.approve_event.set()
 
     def deny(self) -> None:
+        """ダッシュボードからの却下操作。待機中でなければ何もしない。"""
+        if self.state.snapshot()["status"] != "waiting_human":
+            return
+        self.state.append_log("(人間が却下しました)")
         self._send_to_stdin("n\n")
         self.state.approve_event.set()
 
