@@ -10,10 +10,12 @@ claude-agent-sdk経由で実際のClaude Codeを動かすrunner。
   続行、そうでなければ同様に説明文を添えて人間の承認を待つ。
 - ClaudeSDKClient(query()ではなく)を使い、Claudeがツール呼び出しではなく会話文で
   「y/nで確認してください」等の返答を求めてきた場合は、
-  ollama_client.answer_conversational_question()に短い返答を生成させ、
-  追加ターンとして送り返す(最大_MAX_CONVERSATIONAL_TURNS回)。この会話応答は
-  あくまで「進めてよいか」という相槌への一次対応であり、実際のツール実行の安全性は
-  PreToolUse/can_use_tool側のrules.check_destructive()判定で別途担保される。
+  ollama_client.judge_conversational_question()でnot_question/allow/escalateを
+  一次判定する(judge_permission()と同じ考え方)。allowなら"y"を自動返信、
+  escalateなら人間の承認待ちにしてから返信する(最大_MAX_CONVERSATIONAL_TURNS回)。
+  この会話応答はあくまで「進めてよいか」という相槌への一次対応であり、実際の
+  ツール実行の安全性はPreToolUse/can_use_tool側のrules.check_destructive()判定で
+  別途独立して担保される。
 - setting_sources=["project"] を指定し、この操作者個人のグローバル設定
   (~/.claude/CLAUDE.md等)がラップ対象の(無関係な)セッションに紛れ込まないようにする。
   ターゲットプロジェクト自身の.claude/settings.json・CLAUDE.mdは尊重する。
@@ -107,18 +109,38 @@ class ClaudeRunner:
             await self._converse(client)
 
     async def _converse(self, client: ClaudeSDKClient) -> None:
-        """応答を読み、Claudeが会話文で確認を求めてきたらollamaに回答させて送り返す。"""
+        """応答を読み、Claudeが会話文で確認を求めてきた場合の一次受付を行う。
+
+        judge_conversational_question()でnot_question/allow/escalateを判定し、
+        can_use_toolの分岐(rules.check_destructive/judge_permission)と同じ
+        考え方で: allowなら自動で続行、escalateなら人間の承認待ちにする。
+        """
         for _ in range(self._MAX_CONVERSATIONAL_TURNS):
             last_text = self._read_turn(await self._collect_turn(client))
             if not last_text:
                 return
-            answer = ollama_client.answer_conversational_question(
+
+            judged = ollama_client.judge_conversational_question(
                 last_text, model=self.ollama_model
             )
-            if answer is None:
+            if judged["decision"] == "not_question":
                 return
-            self.state.append_log(f"(ollamaが会話上の確認に回答: {answer})")
-            await client.query(answer)
+
+            if judged["decision"] == "allow":
+                self.state.append_log("(ollamaが会話上の確認に自動応答: y)")
+                await client.query("y")
+                continue
+
+            explanation = ollama_client.explain_operation(
+                last_text, model=self.ollama_model
+            )
+            self.state.set_waiting("conversational_escalated", explanation)
+            self.notifier("medium", "エージェントからの確認(要判断)", explanation)
+            approved = await self._wait_for_approval()
+            reply = (
+                "y" if approved else "n。却下されました。別の方法を検討してください。"
+            )
+            await client.query(reply)
 
     async def _collect_turn(self, client: ClaudeSDKClient) -> list[object]:
         messages: list[object] = []
