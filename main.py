@@ -17,17 +17,22 @@ import sys
 
 from . import notifier, qr_display
 from .dashboard import make_app
+from .runners.base import ApprovalRunnerBase
 from .runners.claude_runner import ClaudeRunner
+from .runners.codex_runner import CodexRunner
 from .wrapper import AgentWrapper, SharedState
 
 AGENT_COMMANDS = {
-    # 実際の環境に合わせて調整する。ヘッドレスモードで動かす想定。
-    # "claude" は ClaudeRunner(claude-agent-sdk経由)を使うため、ここには含めない。
-    "codex": ["codex", "exec"],
+    # "claude"/"codex" はSDK/MCPベースのrunner(runners/)を使うため、ここには含めない。
     "mock": [sys.executable, "-m", "agent_wrapper.mock_agent"],
 }
 
-AGENT_CHOICES = ["claude", *AGENT_COMMANDS.keys()]
+RUNNER_CLASSES: dict[str, type[ApprovalRunnerBase]] = {
+    "claude": ClaudeRunner,
+    "codex": CodexRunner,
+}
+
+AGENT_CHOICES = [*RUNNER_CLASSES.keys(), *AGENT_COMMANDS.keys()]
 
 DEFAULT_PORT = 28765
 
@@ -48,27 +53,30 @@ def main() -> None:
         help="ntfy.sh のトピック名(省略時は環境変数 AGENT_WRAPPER_NTFY_TOPIC を使う。両方未指定ならプッシュ通知は行わない)",
     )
     parser.add_argument(
-        "--prompt", help="--agent claude 使用時に必須。エージェントへの初期指示。"
+        "--prompt",
+        help="--agent claude/codex 使用時に必須。エージェントへの初期指示。",
     )
     parser.add_argument(
         "--prompt-file",
-        help="--agent claude 使用時、--prompt の代わりにファイルから読む。",
+        help="--agent claude/codex 使用時、--prompt の代わりにファイルから読む。",
     )
     args = parser.parse_args()
 
-    if args.agent == "claude" and not (args.prompt or args.prompt_file):
-        parser.error("--agent claude を使う場合は --prompt か --prompt-file が必須です")
+    if args.agent in RUNNER_CLASSES and not (args.prompt or args.prompt_file):
+        parser.error(
+            f"--agent {args.agent} を使う場合は --prompt か --prompt-file が必須です"
+        )
 
     state = SharedState()
     notify = notifier.make_notifier(ntfy_topic=args.ntfy_topic)
 
-    agent: AgentWrapper | ClaudeRunner
-    if args.agent == "claude":
+    agent: AgentWrapper | ApprovalRunnerBase
+    if args.agent in RUNNER_CLASSES:
         prompt = args.prompt
         if args.prompt_file:
             with open(args.prompt_file, encoding="utf-8") as f:
                 prompt = f.read()
-        agent = ClaudeRunner(
+        agent = RUNNER_CLASSES[args.agent](
             prompt=prompt,
             cwd=os.getcwd(),
             state=state,

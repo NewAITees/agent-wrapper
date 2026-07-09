@@ -97,11 +97,27 @@ agent-wrapper --agent claude --prompt-file ./task.md
 同じく問答無用で人間の承認待ちになる。ウイルスや信頼できないコードのインストール・取得を自動承認させないための
 安全弁で、新しいパッケージマネージャに対応させたい場合はここにパターンを足す。
 
-## 実際のCodexに繋ぐとき
+## 実際のCodexに繋ぐとき(`--agent codex`)
 
-`--agent codex` は `main.py` の `AGENT_COMMANDS["codex"]`(`codex exec`)をサブプロセスとして起動するだけの
-仮実装で、`--agent claude` のような `PreToolUse`/`can_use_tool` 相当の構造化ゲートはまだない。`openai-codex`
-Python SDK(ベータ版)の承認コールバックAPIを調査した上での対応は今後の課題(`docs/agent_wrapper_sdk_integration_plan.md` 参照)。
+`--agent codex` は `codex mcp-server` をMCPクライアントとして起動する方式で動く
+(`agent_wrapper/runners/codex_runner.py` の `CodexRunner`)。認証は既存の `codex` CLIログイン
+(ChatGPTサブスクリプション)をそのまま使う。
+
+```bash
+agent-wrapper --agent codex --prompt "READMEを読んで要約して"
+```
+
+`--agent claude` と同様に `--prompt` か `--prompt-file` が必須。仕組み:
+
+1. codexが承認の必要な操作(シェルコマンド実行、apply_patchによるファイル変更)を行おうとするたびに、
+   MCP elicitation(承認要求)がラッパーに構造化データとして届く(`approval-policy=untrusted` を指定)
+2. 以降はclaude側と共通のゲート(`runners/base.py`): `rules.check_destructive()` 一致→説明つきで必ず人間の
+   承認待ち / 不一致→`judge_permission()` 一次判定→安全なら続行、そうでなければ人間の承認待ち
+3. 会話文での確認質問にも `judge_conversational_question()` で一次受付する(claude側と同じ)
+
+注意: `codex exec`(非対話モード)は承認ポリシーを強制的に無効化するためこの用途には使えない
+(実機検証済み)。また、codexが送る独自通知(`codex/event`)がMCP SDKの型検証を通らず警告ログが
+出ることがあるが、動作には影響しない。詳細は `docs/agent_wrapper_sdk_integration_plan.md` 3.2節を参照。
 
 ## ollamaとの連携
 
