@@ -3,12 +3,14 @@ claude-agent-sdk経由で実際のClaude Codeを動かすrunner。
 
 役割:
 - PreToolUseフック(Bash/Write/Edit)は常に"ask"を返し、判定をcan_use_toolに委ねる
-- can_use_toolがwrapper.pyの_handle_lineと1対1で対応する判定を行う
-  (共通実装は base.py の ApprovalRunnerBase._gate() を参照):
+  (can_use_tool単体では「Claudeが安全と自己判断した呼び出し」を拾えない。
+  GitHub Issue #912で仕様と確認済み)
+- can_use_toolが共通ゲート(base.pyのApprovalRunnerBase._gate())で判定する:
   rules.check_destructive()に一致すれば(ollamaのALLOW/ESCALATE判定を経由せず)
   ollama_client.explain_operation()で内容を説明した上で必ず人間の承認を待つ。
   一致しなければollama_client.judge_permission()の一次判定を経て、ALLOWならそのまま
   続行、そうでなければ同様に説明文を添えて人間の承認を待つ。
+  却下時はPermissionResultDeny(message=人間のメッセージ, interrupt=False)を返す
 - ClaudeSDKClient(query()ではなく)を使い、Claudeがツール呼び出しではなく会話文で
   「y/nで確認してください」等の返答を求めてきた場合は、
   ollama_client.judge_conversational_question()でnot_question/allow/escalateを
@@ -18,9 +20,9 @@ claude-agent-sdk経由で実際のClaude Codeを動かすrunner。
   別途独立して担保される。
 - setting_sources=["project"] を指定し、この操作者個人のグローバル設定
   (~/.claude/CLAUDE.md等)がラップ対象の(無関係な)セッションに紛れ込まないようにする。
-  ターゲットプロジェクト自身の.claude/settings.json・CLAUDE.mdは尊重する。
+  ただしこれだけでは混入を完全には防げないことが実機で判明している(原因未確定)。
 - AgentWrapper(wrapper.py, mock/subprocess方式)と同じ公開インターフェース
-  (start/approve/deny/stop)を持ち、dashboard.py/main.pyから透過的に扱える。
+  (start/respond/approve/deny/stop)を持ち、dashboard.py/main.pyから透過的に扱える。
 
 既知の制限: 承認待ちは1件のみを想定している(mock方式のthreading.Event共有と同種の
 制限。tasks/lessons.md参照)。複数のツール呼び出しが同時にaskへ倒れた場合、片方への
@@ -49,8 +51,7 @@ _GATED_MATCHER = "|".join(sorted(GATED_TOOLS))
 
 
 class ClaudeRunner(ApprovalRunnerBase):
-    """claude-agent-sdk経由でClaude Codeを動かすrunner。AgentWrapperと同じ
-    公開インターフェース(start/approve/deny/stop)を持つ。
+    """claude-agent-sdk経由でClaude Codeを動かすrunner(詳細はモジュールdocstring)。
 
     関連: ApprovalRunnerBase(base.py, 共通ゲート実装), SharedState(wrapper.py),
     rules.py(検知ルール), ollama_client.py(一次判定/説明),
@@ -74,7 +75,6 @@ class ClaudeRunner(ApprovalRunnerBase):
             await self._converse(client)
 
     async def _converse(self, client: ClaudeSDKClient) -> None:
-        """応答を読み、Claudeが会話文で確認を求めてきた場合の一次受付を行う。"""
         for _ in range(self._MAX_CONVERSATIONAL_TURNS):
             last_text = self._read_turn(await self._collect_turn(client))
             if not last_text:
@@ -82,7 +82,12 @@ class ClaudeRunner(ApprovalRunnerBase):
             reply = await self._conversational_reply(last_text)
             if reply is None:
                 return
+            self.state.append_log(f"[人間応答送信] {reply}")
             await client.query(reply)
+        self.state.append_log("(会話確認が最大ターン数に達したため終了します)")
+        self.state.set_stopped(
+            "max_conversation_turns", "会話確認が最大5ターンに達しました"
+        )
 
     async def _collect_turn(self, client: ClaudeSDKClient) -> list[object]:
         messages: list[object] = []
@@ -107,6 +112,24 @@ class ClaudeRunner(ApprovalRunnerBase):
                     self.state.append_log(block.text)
                 elif isinstance(block, ToolUseBlock):
                     self.state.append_log(f"[ツール実行] {block.name} {block.input}")
+                else:
+                    self._log_unknown_block(block)
+
+    def _log_unknown_block(self, block: object) -> None:
+        block_type = type(block).__name__
+        text = getattr(block, "text", None)
+        if isinstance(text, str) and text:
+            self.state.append_log(f"[{block_type}] {text[:200]}")
+            return
+        summary = getattr(block, "summary", None)
+        if isinstance(summary, str) and summary:
+            self.state.append_log(f"[{block_type}] {summary[:200]}")
+            return
+        content = getattr(block, "content", None)
+        if isinstance(content, str) and content:
+            self.state.append_log(f"[{block_type}] {content[:200]}")
+            return
+        self.state.append_log(f"[{block_type}] {block}")
 
     async def _pre_tool_use_hook(
         self,
@@ -133,4 +156,8 @@ class ClaudeRunner(ApprovalRunnerBase):
         approved = await self._gate(text)
         if approved:
             return PermissionResultAllow(updated_input=input_data)
-        return PermissionResultDeny(message="人間が却下しました", interrupt=False)
+        response = self._response
+        return PermissionResultDeny(
+            message=response.to_agent_text(),
+            interrupt=False,
+        )

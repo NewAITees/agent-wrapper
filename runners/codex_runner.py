@@ -13,11 +13,12 @@ codex mcp-server にMCPクライアントとして接続し、実際のCodexを�
   (codex-rs/mcp-server/src/exec_approval.rs のExecApprovalResponse。
   codex自身のソースにTODOとして明記されており、パース失敗時は保守的に
   denied扱いになる)。ElicitResultはextra="allow"なのでdecisionを同梱する。
+  contentに人間のメッセージを渡す場合はdict形式にする(list不可、pydanticの型制約)。
 
 役割:
 - elicitation(exec-approval/patch-approval)が届くたびに、
   ApprovalRunnerBase._gate()(rules.check_destructive→人間確認 /
-  judge_permission→ALLOW or 人間確認)で判定し、decisionを返す
+  judge_permission→ALLOW or 人間確認)で判定し、decision(+人間のメッセージ)を返す
 - セッション終了時の最終メッセージが会話上の確認質問であれば、
   _conversational_reply()で一次受付し、codex-replyツールで返答する
 - codex-replyに必要なthreadIdは、codexツール応答のstructuredContent
@@ -25,12 +26,13 @@ codex mcp-server にMCPクライアントとして接続し、実際のCodexを�
   elicitation経由の取得はフォールバック。かつてはelicitation経由のみだったため、
   elicitationが一度も発生しないまま会話質問が来ると返答できず即終了する
   バグがあった(2026-07-09の実運用で顕在化、修正済み)
-- AgentWrapper/ClaudeRunnerと同じ公開インターフェース(start/approve/deny/stop)
+- AgentWrapper/ClaudeRunnerと同じ公開インターフェース(start/respond/approve/deny/stop)
 
 既知の制限:
 - 承認待ちは1件のみを想定(tasks/lessons.md参照)
 - codexが送る独自通知(codex/event)はmcp SDKの型検証を通らず警告ログが出るが、
-  動作には影響しない(elicitation/ツール応答は正常に処理される)
+  動作には影響しない(elicitation/ツール応答は正常に処理される)。
+  ログ肥大の抑制はtasks/todo.md「ログ設計の改善」を参照
 
 参照: docs/agent_wrapper_sdk_integration_plan.md セクション3.2
 """
@@ -53,8 +55,7 @@ def _codex_cmd() -> str:
 
 
 class CodexRunner(ApprovalRunnerBase):
-    """codex mcp-server経由でCodexを動かすrunner。AgentWrapperと同じ
-    公開インターフェース(start/approve/deny/stop)を持つ。
+    """codex mcp-server経由でCodexを動かすrunner(詳細はモジュールdocstring)。
 
     関連: ApprovalRunnerBase(base.py, 共通ゲート実装), SharedState(wrapper.py),
     rules.py(検知ルール), ollama_client.py(一次判定/説明)。
@@ -85,7 +86,6 @@ class CodexRunner(ApprovalRunnerBase):
                 await self._converse(session, last_text)
 
     async def _converse(self, session: ClientSession, last_text: str) -> None:
-        """最終メッセージが会話上の確認質問であれば一次受付して返答する。"""
         for _ in range(self._MAX_CONVERSATIONAL_TURNS):
             if not last_text:
                 return
@@ -97,20 +97,19 @@ class CodexRunner(ApprovalRunnerBase):
                     "(threadId不明のため会話を継続できません。セッションを終了します)"
                 )
                 return
+            self.state.append_log(f"[人間応答送信] {reply}")
             result = await session.call_tool(
                 "codex-reply",
                 arguments={"threadId": self._thread_id, "prompt": reply},
             )
             self._capture_thread_id(result)
             last_text = self._log_result(result)
+        self.state.append_log("(会話確認が最大ターン数に達したため終了します)")
+        self.state.set_stopped(
+            "max_conversation_turns", "会話確認が最大5ターンに達しました"
+        )
 
     def _capture_thread_id(self, result: t.CallToolResult) -> None:
-        """codexツール応答のstructuredContentからthreadIdを取得する。
-
-        elicitationが一度も発生しないままcodexが会話文で確認を求めてくる
-        ケースでもcodex-replyで返答できるようにするための主経路
-        (モジュールdocstring参照)。
-        """
         structured = result.structuredContent or {}
         thread_id = structured.get("threadId")
         if isinstance(thread_id, str) and thread_id:
@@ -122,10 +121,11 @@ class CodexRunner(ApprovalRunnerBase):
             if isinstance(block, t.TextContent):
                 last_text = block.text
                 self.state.append_log(block.text)
+            else:
+                self.state.append_log(f"[codex:{type(block).__name__}] {block}")
         return last_text
 
     def _describe_elicitation(self, params: t.ElicitRequestParams) -> str:
-        """elicitationの内容を、rules/ollamaに渡す文字列表現に変換する。"""
         extra = params.model_extra or {}
         kind = str(extra.get("codex_elicitation", ""))
         if kind == "exec-approval":
@@ -150,16 +150,17 @@ class CodexRunner(ApprovalRunnerBase):
         text = self._describe_elicitation(params)
         self.state.append_log(f"[承認要求] {text}")
         approved = await self._gate(text)
-        return self._elicit_result(approved)
+        return self._elicit_result(approved, self._response.to_agent_text())
 
     @staticmethod
-    def _elicit_result(approved: bool) -> t.ElicitResult:
-        # トップレベルのdecisionはcodex独自形式(モジュールdocstring参照)。
-        # ElicitResultはextra="allow"なのでmodel_validateで追加フィールドを同梱できる。
+    def _elicit_result(approved: bool, message: str = "") -> t.ElicitResult:
+        content = {"reply": message} if message else {}
         if approved:
-            return t.ElicitResult.model_validate(
-                {"action": "accept", "decision": "approved"}
-            )
-        return t.ElicitResult.model_validate(
-            {"action": "decline", "decision": "denied"}
-        )
+            payload: dict[str, object] = {"action": "accept", "decision": "approved"}
+            if content:
+                payload["content"] = content
+            return t.ElicitResult.model_validate(payload)
+        payload = {"action": "decline", "decision": "denied"}
+        if content:
+            payload["content"] = content
+        return t.ElicitResult.model_validate(payload)

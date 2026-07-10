@@ -2,11 +2,11 @@
 エントリーポイント。
 
 使い方:
-    agent-wrapper --agent claude   # uv tool install -e . 済みならどのディレクトリからでも
+    agent-wrapper --agent claude --prompt "..."   # uv tool install -e . 済みならどのディレクトリからでも
     uv run python -m agent_wrapper.main --agent mock   # リポジトリルートから直接動かす場合
 
 ダッシュボードは http://0.0.0.0:28765/ で起動する。起動時にLAN側のURLとQRコードを
-ターミナルに表示するので、スマホ/MacはそれをアクセスするかQRコードを読み取ればよい。
+ターミナルに表示し、同じQRをダッシュボードのHTML上にも表示する。
 LAN外からのアクセスにはWindows Defenderファイアウォールでポートを開ける必要がある
 (詳細はREADME.md参照)。
 """
@@ -23,7 +23,6 @@ from .runners.codex_runner import CodexRunner
 from .wrapper import AgentWrapper, SharedState
 
 AGENT_COMMANDS = {
-    # "claude"/"codex" はSDK/MCPベースのrunner(runners/)を使うため、ここには含めない。
     "mock": [sys.executable, "-m", "agent_wrapper.mock_agent"],
 }
 
@@ -33,12 +32,11 @@ RUNNER_CLASSES: dict[str, type[ApprovalRunnerBase]] = {
 }
 
 AGENT_CHOICES = [*RUNNER_CLASSES.keys(), *AGENT_COMMANDS.keys()]
-
 DEFAULT_PORT = 28765
 
 
 def main() -> None:
-    sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[union-attr]  # Windowsのcp932コンソールでも日本語/QRのブロック文字を出せるようにする
+    sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--agent", choices=AGENT_CHOICES, default="mock")
@@ -96,6 +94,7 @@ def main() -> None:
     app = make_app(agent, state)
 
     lan_url = f"http://{qr_display.get_lan_ip()}:{args.port}/"
+    state.set_qr_code(lan_url)
     print(f"ダッシュボード(このPC上): http://localhost:{args.port}/")
     qr_display.print_dashboard_qr(lan_url)
     if not args.ntfy_topic:
