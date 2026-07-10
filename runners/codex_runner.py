@@ -20,6 +20,11 @@ codex mcp-server にMCPクライアントとして接続し、実際のCodexを�
   judge_permission→ALLOW or 人間確認)で判定し、decisionを返す
 - セッション終了時の最終メッセージが会話上の確認質問であれば、
   _conversational_reply()で一次受付し、codex-replyツールで返答する
+- codex-replyに必要なthreadIdは、codexツール応答のstructuredContent
+  (実機確認済み: {"threadId": ..., "content": ...})から取得する。
+  elicitation経由の取得はフォールバック。かつてはelicitation経由のみだったため、
+  elicitationが一度も発生しないまま会話質問が来ると返答できず即終了する
+  バグがあった(2026-07-09の実運用で顕在化、修正済み)
 - AgentWrapper/ClaudeRunnerと同じ公開インターフェース(start/approve/deny/stop)
 
 既知の制限:
@@ -75,6 +80,7 @@ class CodexRunner(ApprovalRunnerBase):
                         "sandbox": "workspace-write",
                     },
                 )
+                self._capture_thread_id(result)
                 last_text = self._log_result(result)
                 await self._converse(session, last_text)
 
@@ -95,7 +101,20 @@ class CodexRunner(ApprovalRunnerBase):
                 "codex-reply",
                 arguments={"threadId": self._thread_id, "prompt": reply},
             )
+            self._capture_thread_id(result)
             last_text = self._log_result(result)
+
+    def _capture_thread_id(self, result: t.CallToolResult) -> None:
+        """codexツール応答のstructuredContentからthreadIdを取得する。
+
+        elicitationが一度も発生しないままcodexが会話文で確認を求めてくる
+        ケースでもcodex-replyで返答できるようにするための主経路
+        (モジュールdocstring参照)。
+        """
+        structured = result.structuredContent or {}
+        thread_id = structured.get("threadId")
+        if isinstance(thread_id, str) and thread_id:
+            self._thread_id = thread_id
 
     def _log_result(self, result: t.CallToolResult) -> str:
         last_text = ""
