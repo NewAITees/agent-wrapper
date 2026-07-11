@@ -6,6 +6,7 @@
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass
@@ -43,11 +44,64 @@ DESTRUCTIVE_PATTERNS: list[tuple[str, str]] = [
     (r"\bgit\s+clone\b", "未知のリポジトリの取得 (git clone)"),
     (r"\bdocker\s+pull\b", "未知のDockerイメージの取得 (docker pull)"),
     (r"\bdocker\s+run\b", "未知のDockerイメージの実行 (docker run)"),
+    # L3: 対外的・公開・シークレット変更。実行直前に必ず人間確認する。
+    (
+        r"\bgit\s+push\b[^\r\n]*(?:\bmain\b|\bmaster\b|\brelease(?:[/\w.-]*)?\b)",
+        "保護対象ブランチへのgit push",
+    ),
+    (
+        r"\bgit\s+merge\s+(?:main|master|release(?:[/\w.-]*)?)\b",
+        "保護対象ブランチのgit merge",
+    ),
+    (r"\bgh\s+pr\s+merge\b", "Pull Requestのマージ"),
+    (r"(?<![\w一-龥ぁ-んァ-ヶ])deploy(?:ment)?\b", "デプロイ"),
+    (r"\bnpm\s+publish\b", "npmパッケージの公開"),
+    (r"\bdocker\s+push\b", "Dockerイメージの公開"),
+    (r"\btwine\s+upload\b", "Pythonパッケージの公開"),
+    (r"\bgh\s+release\b", "GitHub Releaseの操作"),
+    (r"\bcargo\s+publish\b", "Rustクレートの公開"),
+    (r"\bgem\s+push\b", "Ruby gemの公開"),
+    (r"\bgh\s+secret\s+set\b", "GitHubシークレットの変更"),
+    (r"\baws\s+secretsmanager\b", "AWS Secrets Managerの操作"),
+    (r"\bvault\s+write\b", "Vaultシークレットの変更"),
 ]
 
 _COMPILED = [
     (re.compile(p, re.IGNORECASE), reason) for p, reason in DESTRUCTIVE_PATTERNS
 ]
+
+
+_SECRET_NAME_RE = re.compile(
+    r"(?i)(?:^|[._-])(?:env|secret|secrets|credential|credentials)(?:$|[._-])|"
+    r"^id_rsa(?:\..*)?$|\.pem$"
+)
+
+
+def describe_l1_facts(paths: list[str] | None, cwd: str) -> str:
+    """構造的に取得できた対象パスについてL1判定用の事実を説明する。"""
+    if not paths:
+        return "対象パス: 不明"
+
+    cwd_path = Path(cwd).resolve(strict=False)
+    facts: list[str] = []
+    for raw_path in paths:
+        path = Path(raw_path)
+        resolved = (
+            (cwd_path / path).resolve(strict=False)
+            if not path.is_absolute()
+            else path.resolve(strict=False)
+        )
+        try:
+            resolved.relative_to(cwd_path)
+            in_cwd = True
+        except ValueError:
+            in_cwd = False
+        secret_like = bool(_SECRET_NAME_RE.search(resolved.name))
+        facts.append(
+            f"対象パス {raw_path}: cwd配下={'はい' if in_cwd else 'いいえ'}, "
+            f"シークレットらしい名前={'はい' if secret_like else 'いいえ'}"
+        )
+    return "\n".join(facts)
 
 
 def check_destructive(line: str) -> RuleMatch:

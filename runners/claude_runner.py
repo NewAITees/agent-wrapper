@@ -43,6 +43,7 @@ from claude_agent_sdk.types import (
     ToolUseBlock,
 )
 
+from .. import rules
 from .base import ApprovalRunnerBase
 from .tool_describe import GATED_TOOLS, describe_tool_call
 
@@ -74,19 +75,27 @@ class ClaudeRunner(ApprovalRunnerBase):
             await self._converse(client)
 
     async def _converse(self, client: ClaudeSDKClient) -> None:
-        for _ in range(self._MAX_CONVERSATIONAL_TURNS):
+        turns = 0
+        while True:
             last_text = self._read_turn(await self._collect_turn(client))
             if not last_text:
                 return
             reply = await self._conversational_reply(last_text)
             if reply is None:
                 return
+            if turns >= self._MAX_CONVERSATIONAL_TURNS:
+                # 勝手に打ち切らず人間に継続可否を確認する(base.py参照)
+                if not await self._confirm_continue_conversation():
+                    self.state.append_log("(人間の判断により会話確認を終了します)")
+                    self.state.set_stopped(
+                        "max_conversation_turns",
+                        "会話確認の上限で人間が終了を選択しました",
+                    )
+                    return
+                turns = 0
             self.state.append_log(f"[人間応答送信] {reply}")
             await client.query(reply)
-        self.state.append_log("(会話確認が最大ターン数に達したため終了します)")
-        self.state.set_stopped(
-            "max_conversation_turns", "会話確認が最大5ターンに達しました"
-        )
+            turns += 1
 
     async def _collect_turn(self, client: ClaudeSDKClient) -> list[object]:
         messages: list[object] = []
@@ -152,7 +161,13 @@ class ClaudeRunner(ApprovalRunnerBase):
         context: ToolPermissionContext,
     ) -> PermissionResultAllow | PermissionResultDeny:
         text = describe_tool_call(tool_name, input_data)
-        response = await self._gate(text)
+        paths = (
+            [str(input_data.get("file_path", ""))]
+            if tool_name in ("Write", "Edit")
+            else None
+        )
+        l1_facts = rules.describe_l1_facts(paths, self.cwd)
+        response = await self._gate(text, l1_facts)
         if response.action == "approve":
             return PermissionResultAllow(updated_input=input_data)
         return PermissionResultDeny(

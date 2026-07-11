@@ -296,7 +296,9 @@ class AgentWrapper:
                 self._send_to_stdin("y\n")
                 self.state.append_log(f"(ollama自動承認: {content})")
             else:
-                reason = content or "権限確認"
+                reason = ollama_client.explain_operation(
+                    content or "権限確認", model=self.ollama_model
+                )
                 self.notifier("medium", "権限確認(要判断)", reason)
                 self._wait_for_approval("permission_escalated", reason, detail=line)
 

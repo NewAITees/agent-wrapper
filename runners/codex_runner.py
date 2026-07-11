@@ -44,6 +44,7 @@ import mcp.types as t
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from .. import rules
 from .base import ApprovalRunnerBase
 
 
@@ -86,7 +87,8 @@ class CodexRunner(ApprovalRunnerBase):
                 await self._converse(session, last_text)
 
     async def _converse(self, session: ClientSession, last_text: str) -> None:
-        for _ in range(self._MAX_CONVERSATIONAL_TURNS):
+        turns = 0
+        while True:
             if not last_text:
                 return
             reply = await self._conversational_reply(last_text)
@@ -97,6 +99,16 @@ class CodexRunner(ApprovalRunnerBase):
                     "(threadId不明のため会話を継続できません。セッションを終了します)"
                 )
                 return
+            if turns >= self._MAX_CONVERSATIONAL_TURNS:
+                # 勝手に打ち切らず人間に継続可否を確認する(base.py参照)
+                if not await self._confirm_continue_conversation():
+                    self.state.append_log("(人間の判断により会話確認を終了します)")
+                    self.state.set_stopped(
+                        "max_conversation_turns",
+                        "会話確認の上限で人間が終了を選択しました",
+                    )
+                    return
+                turns = 0
             self.state.append_log(f"[人間応答送信] {reply}")
             result = await session.call_tool(
                 "codex-reply",
@@ -104,10 +116,7 @@ class CodexRunner(ApprovalRunnerBase):
             )
             self._capture_thread_id(result)
             last_text = self._log_result(result)
-        self.state.append_log("(会話確認が最大ターン数に達したため終了します)")
-        self.state.set_stopped(
-            "max_conversation_turns", "会話確認が最大5ターンに達しました"
-        )
+            turns += 1
 
     def _capture_thread_id(self, result: t.CallToolResult) -> None:
         structured = result.structuredContent or {}
@@ -148,8 +157,22 @@ class CodexRunner(ApprovalRunnerBase):
             self._thread_id = thread_id
 
         text = self._describe_elicitation(params)
+
+        changes = extra.get("codex_changes") or {}
+
+        paths = (
+            list(changes)
+            if extra.get("codex_elicitation") == "patch-approval"
+            else None
+        )
+
+        l1_facts = rules.describe_l1_facts(
+            [str(path) for path in paths] if paths else None, self.cwd
+        )
+
         self.state.append_log(f"[承認要求] {text}")
-        response = await self._gate(text)
+
+        response = await self._gate(text, l1_facts)
         return self._elicit_result(
             response.action == "approve", response.to_agent_text()
         )

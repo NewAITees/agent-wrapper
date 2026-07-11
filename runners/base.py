@@ -14,6 +14,10 @@ ClaudeRunner(claude-agent-sdk)とCodexRunner(codex mcp-server)で、
 - 終了理由(stop_reason): 正常完了/エラー/最大会話ターン到達を区別して
   SharedState.set_stopped()に記録する。却下してもセッションは中断しない
   (interrupt=False相当)ため「中断」とは断定せず、却下件数のみ詳細に添える
+- 会話確認の上限(_MAX_CONVERSATIONAL_TURNS)に達しても勝手に打ち切らず、
+  _confirm_continue_conversation()で人間にエスカレーションする(承認=継続して
+  カウンタをリセット / 却下=終了)。打ち切りをラッパーが独断しないため
+  (2026-07-11の実運用で、正当な多段確認の途中で勝手に打ち切る問題が顕在化)
 
 承認待ちはSharedState上でFIFOキュー化されており、同時に複数件発生しても
 先頭1件ずつ独立して解除される。
@@ -79,7 +83,7 @@ class ApprovalRunnerBase:
     async def _run_async(self) -> None:
         raise NotImplementedError
 
-    async def _gate(self, text: str) -> HumanResponse:
+    async def _gate(self, text: str, l1_facts: str | None = None) -> HumanResponse:
         """承認判定。人間(またはollama自動承認)のHumanResponseをそのまま返す。
 
         呼び出し側は response.action == "approve" で許可判定し、却下時の
@@ -94,7 +98,9 @@ class ApprovalRunnerBase:
             self.notifier("high", "削除系の操作を検知", reason)
             return await self._wait_for_approval("destructive", reason, detail=text)
 
-        judged = ollama_client.judge_permission(text, model=self.ollama_model)
+        judged = ollama_client.judge_permission(
+            text, model=self.ollama_model, l1_facts=l1_facts
+        )
         if judged["decision"] == "allow":
             self.state.append_log(f"(ollama自動承認: {text})")
             return HumanResponse("approve")
@@ -123,6 +129,16 @@ class ApprovalRunnerBase:
             "conversational_escalated", explanation, detail=last_text
         )
         return response.to_agent_text()
+
+    async def _confirm_continue_conversation(self) -> bool:
+        """会話確認が上限に達したときの継続判断を人間に委ねる。Trueなら継続。"""
+        reason = (
+            f"エージェントとの会話確認が{self._MAX_CONVERSATIONAL_TURNS}回続いています。"
+            "作業を継続させますか?(承認=継続 / 却下=セッション終了)"
+        )
+        self.notifier("medium", "会話確認が上限に到達", reason)
+        response = await self._wait_for_approval("conversation_limit", reason)
+        return response.action == "approve"
 
     async def _wait_for_approval(
         self, kind: str, reason: str, detail: str = ""

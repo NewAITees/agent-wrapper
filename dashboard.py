@@ -329,7 +329,15 @@ function playNotificationSound() {
 logEl.addEventListener('scroll', () => {
   autoScroll = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 20;
 });
-soundToggle.addEventListener('change', saveSoundPreference);
+soundToggle.addEventListener('change', () => {
+  saveSoundPreference();
+  // トグル操作は確実なユーザージェスチャなので、ここでAudioContextを解錠し
+  // テスト音を鳴らす(初回の承認待ちがページ操作より先に来ると無音になる問題への対処)
+  if (soundToggle.checked) {
+    primeAudio();
+    playNotificationSound();
+  }
+});
 document.addEventListener('pointerdown', primeAudio, { once: true });
 document.addEventListener('keydown', primeAudio, { once: true });
 

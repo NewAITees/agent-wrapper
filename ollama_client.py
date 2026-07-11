@@ -72,15 +72,24 @@ def summarize_chunk(log_chunk: str, model: str = DEFAULT_MODEL) -> str:
         return f"(要約失敗: {e})"
 
 
-def judge_permission(context: str, model: str = DEFAULT_MODEL) -> dict[str, str]:
-    """
-    ルールエンジンで白黒つかなかった権限確認について、
-    ollamaに一次判定させる。判断がつかない場合はescalateにする。
-    """
+def judge_permission(
+    context: str, model: str = DEFAULT_MODEL, l1_facts: str | None = None
+) -> dict[str, str]:
+    """ルールで白黒つかない権限確認を一次判定する。不明時はescalate。"""
+    facts = l1_facts or "対象パス: 不明"
     prompt = (
-        "コーディングエージェントが次の操作について許可を求めています。"
-        "破壊的でなく、明らかに安全で自明な操作であれば ALLOW、"
-        "少しでもリスクや不確実性があれば ESCALATE とだけ判定してください。"
+        "コーディングエージェントが次の操作について許可を求めています。\n"
+        "L0(ALLOW): 外部送信を伴わない読み取り・検索・一覧、git status/diff/log、"
+        "ログや設定の確認。\n"
+        "L1(ALLOW): cwd配下の通常ファイルの編集・新規作成、テスト、lint、型チェック、"
+        "フォーマット、ビルド、ローカルサーバー起動、差分生成。"
+        "ファイルを書き込むという理由だけでESCALATEしてはいけません。\n"
+        "ESCALATE: cwd外・ユーザープロファイル・システム領域への書き込み、.env・"
+        "credential・secret・鍵などへの操作、外部へのデータ送信、スケジューラ登録等の"
+        "自動実行の仕掛け、その他判断がつかないもの。\n"
+        "以下の機械判定事実を推測で変更せず考慮してください。対象パス不明なら、"
+        "操作内容だけで安全性が明白な場合を除きESCALATEしてください。\n"
+        f"機械判定事実:\n{facts}\n"
         "出力は ALLOW か ESCALATE のどちらか一語のみです。\n\n"
         f"操作内容: {context}"
     )
@@ -103,7 +112,8 @@ def explain_operation(context: str, model: str = DEFAULT_MODEL) -> str:
     prompt = (
         "コーディングエージェントが次の操作を行おうとしています。"
         "人間が承認するかどうか判断できるよう、何をする操作で、"
-        "何に影響するかを日本語で1〜2文、簡潔に説明してください。"
+        "何のために行うか(文脈から推測できる場合)、影響・リスク・注意点を"
+        "含め、日本語で2〜4文で簡潔に説明してください。"
         "許可すべきかどうかの判定は不要です。説明文だけを返してください。\n\n"
         f"操作内容: {context}"
     )
@@ -168,6 +178,8 @@ def judge_conversational_question(
         "答えてください。\n"
         "質問であれば、その内容を読んで、破壊的でなく明らかに安全で自明な続行確認で"
         "あれば ALLOW、少しでもリスクや不確実性があれば ESCALATE と答えてください。\n"
+        "『必要な変更をすべて実行してよいですか』のように対象範囲を特定できない"
+        "包括的な確認には自動でyと答えず、必ず ESCALATE としてください。\n"
         "出力は NOT_A_QUESTION / ALLOW / ESCALATE のいずれか一語のみです。\n\n"
         f"{text}"
     )
