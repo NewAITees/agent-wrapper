@@ -29,7 +29,7 @@ codex mcp-server にMCPクライアントとして接続し、実際のCodexを�
 - AgentWrapper/ClaudeRunnerと同じ公開インターフェース(start/respond/approve/deny/stop)
 
 既知の制限:
-- 承認待ちは1件のみを想定(tasks/lessons.md参照)
+- 承認待ちはSharedState上でFIFOキュー化されており、複数件同時に発生しても先頭1件ずつ独立して解除される
 - codexが送る独自通知(codex/event)はmcp SDKの型検証を通らず警告ログが出るが、
   動作には影響しない(elicitation/ツール応答は正常に処理される)。
   ログ肥大の抑制はtasks/todo.md「ログ設計の改善」を参照
@@ -149,8 +149,10 @@ class CodexRunner(ApprovalRunnerBase):
 
         text = self._describe_elicitation(params)
         self.state.append_log(f"[承認要求] {text}")
-        approved = await self._gate(text)
-        return self._elicit_result(approved, self._response.to_agent_text())
+        response = await self._gate(text)
+        return self._elicit_result(
+            response.action == "approve", response.to_agent_text()
+        )
 
     @staticmethod
     def _elicit_result(approved: bool, message: str = "") -> t.ElicitResult:

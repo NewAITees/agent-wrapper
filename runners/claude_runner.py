@@ -24,9 +24,8 @@ claude-agent-sdk経由で実際のClaude Codeを動かすrunner。
 - AgentWrapper(wrapper.py, mock/subprocess方式)と同じ公開インターフェース
   (start/respond/approve/deny/stop)を持ち、dashboard.py/main.pyから透過的に扱える。
 
-既知の制限: 承認待ちは1件のみを想定している(mock方式のthreading.Event共有と同種の
-制限。tasks/lessons.md参照)。複数のツール呼び出しが同時にaskへ倒れた場合、片方への
-承認がもう片方の待機も解除してしまう可能性がある。
+承認待ちはSharedState上でFIFOキュー化されており、複数のツール呼び出しが同時にaskへ
+倒れても、先頭1件ずつ独立して解除される。
 
 参照: docs/agent_wrapper_sdk_integration_plan.md
 """
@@ -153,10 +152,9 @@ class ClaudeRunner(ApprovalRunnerBase):
         context: ToolPermissionContext,
     ) -> PermissionResultAllow | PermissionResultDeny:
         text = describe_tool_call(tool_name, input_data)
-        approved = await self._gate(text)
-        if approved:
+        response = await self._gate(text)
+        if response.action == "approve":
             return PermissionResultAllow(updated_input=input_data)
-        response = self._response
         return PermissionResultDeny(
             message=response.to_agent_text(),
             interrupt=False,

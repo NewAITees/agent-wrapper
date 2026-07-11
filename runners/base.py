@@ -10,12 +10,13 @@ ClaudeRunner(claude-agent-sdk)とCodexRunner(codex mcp-server)で、
   not_question/allow/escalateを判定し、escalateは人間の承認待ち
 - ダッシュボード連携(respond/approve/deny/_wait_for_approval):
   人間の応答はHumanResponse(action: approve/explain/deny + 任意メッセージ)として
-  受け取り、asyncio.Eventをloop.call_soon_threadsafeで橋渡しする
+  受け取り、各承認要求ごとの専用完了通知をloop.call_soon_threadsafeで橋渡しする
 - 終了理由(stop_reason): 正常完了/エラー/最大会話ターン到達を区別して
   SharedState.set_stopped()に記録する。却下してもセッションは中断しない
   (interrupt=False相当)ため「中断」とは断定せず、却下件数のみ詳細に添える
 
-既知の制限: 承認待ちは1件のみを想定(tasks/lessons.md参照)。
+承認待ちはSharedState上でFIFOキュー化されており、同時に複数件発生しても
+先頭1件ずつ独立して解除される。
 
 参照: docs/agent_wrapper_sdk_integration_plan.md セクション4
 """
@@ -49,9 +50,6 @@ class ApprovalRunnerBase:
         self.state = state
         self.ollama_model = ollama_model
         self.notifier: Notifier = notifier or (lambda level, title, body: None)
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._approve_event: asyncio.Event | None = None
-        self._response = HumanResponse("approve")
         self._deny_count = 0
 
     def start(self) -> threading.Thread:
@@ -81,26 +79,28 @@ class ApprovalRunnerBase:
     async def _run_async(self) -> None:
         raise NotImplementedError
 
-    async def _gate(self, text: str) -> bool:
+    async def _gate(self, text: str) -> HumanResponse:
+        """承認判定。人間(またはollama自動承認)のHumanResponseをそのまま返す。
+
+        呼び出し側は response.action == "approve" で許可判定し、却下時の
+        メッセージも同じresponseから取ること(共有変数の後読みは要求間で
+        文面を取り違えるレースになるため禁止)。
+        """
         match = rules.check_destructive(text)
         if match.matched:
             explanation = ollama_client.explain_operation(text, model=self.ollama_model)
             reason = f"{match.reason}\n{explanation}"
-            self.state.set_waiting("destructive", reason)
             self.notifier("high", "削除系の操作を検知", reason)
-            response = await self._wait_for_approval()
-            return response.action == "approve"
+            return await self._wait_for_approval("destructive", reason)
 
         judged = ollama_client.judge_permission(text, model=self.ollama_model)
         if judged["decision"] == "allow":
             self.state.append_log(f"(ollama自動承認: {text})")
-            return True
+            return HumanResponse("approve")
 
         explanation = ollama_client.explain_operation(text, model=self.ollama_model)
-        self.state.set_waiting("permission_escalated", explanation)
         self.notifier("medium", "権限確認(要判断)", explanation)
-        response = await self._wait_for_approval()
-        return response.action == "approve"
+        return await self._wait_for_approval("permission_escalated", explanation)
 
     async def _conversational_reply(self, last_text: str) -> str | None:
         judged = ollama_client.judge_conversational_question(
@@ -115,40 +115,46 @@ class ApprovalRunnerBase:
         explanation = ollama_client.explain_operation(
             last_text, model=self.ollama_model
         )
-        self.state.set_waiting("conversational_escalated", explanation)
         self.notifier("medium", "エージェントからの確認(要判断)", explanation)
-        response = await self._wait_for_approval()
+        response = await self._wait_for_approval(
+            "conversational_escalated", explanation
+        )
         return response.to_agent_text()
 
-    async def _wait_for_approval(self) -> HumanResponse:
-        self._loop = asyncio.get_running_loop()
-        self._approve_event = asyncio.Event()
-        self._response = HumanResponse("approve")
-        await self._approve_event.wait()
-        response = self._response
-        self.state.set_running()
-        return response
+    async def _wait_for_approval(self, kind: str, reason: str) -> HumanResponse:
+        loop = asyncio.get_running_loop()
+        response_future: asyncio.Future[HumanResponse] = loop.create_future()
 
-    def respond(self, action: HumanAction, message: str = "") -> None:
-        if self.state.snapshot()["status"] != "waiting_human":
-            return
+        def on_response(response: HumanResponse) -> None:
+            def resolve() -> None:
+                if not response_future.done():
+                    response_future.set_result(response)
+
+            loop.call_soon_threadsafe(resolve)
+
+        self.state.set_waiting(kind, reason, on_response)
+        return await response_future
+
+    def respond(
+        self,
+        action: HumanAction,
+        message: str = "",
+        request_id: int | None = None,
+    ) -> None:
         response = HumanResponse(action=action, message=message.strip())
-        self._response = response
+        resolved = self.state.respond(response, request_id=request_id)
+        if resolved is None:
+            return
         if action == "deny":
             self._deny_count += 1
         suffix = f": {response.message}" if response.message else ""
         self.state.append_log(f"(人間が{response.log_label()}しました{suffix})")
-        self._notify_event()
 
     def approve(self) -> None:
         self.respond("approve")
 
     def deny(self) -> None:
         self.respond("deny")
-
-    def _notify_event(self) -> None:
-        if self._loop is not None and self._approve_event is not None:
-            self._loop.call_soon_threadsafe(self._approve_event.set)
 
     def stop(self) -> None:
         self.state.set_stopped("terminated", "stop() が呼ばれました")

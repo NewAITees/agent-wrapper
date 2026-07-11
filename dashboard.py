@@ -15,7 +15,12 @@ class Approvable(Protocol):
 
     def approve(self) -> None: ...
     def deny(self) -> None: ...
-    def respond(self, action: HumanAction, message: str = "") -> None: ...
+    def respond(
+        self,
+        action: HumanAction,
+        message: str = "",
+        request_id: int | None = None,
+    ) -> None: ...
 
 
 PAGE = r"""
@@ -130,6 +135,7 @@ PAGE = r"""
 
 <script>
 let autoScroll = true;
+let currentRequestId = null;
 const logEl = document.getElementById('log');
 logEl.addEventListener('scroll', () => {
   autoScroll = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 20;
@@ -143,12 +149,21 @@ function setButtonsEnabled(enabled) {
 
 async function refresh() {
   const s = await fetch('/status').then(r => r.json());
+  currentRequestId = s.pending_request_id ?? null;
   const statusEl = document.getElementById('status');
   statusEl.textContent = '状態: ' + s.status;
   statusEl.className = 'status ' + (s.status === 'waiting_human' ? 'waiting' : (s.status === 'running' ? 'running' : 'stopped'));
 
   document.getElementById('summary').textContent = s.last_summary ? ('直近要約 (' + (s.last_summary_time || '-') + '): ' + s.last_summary) : '';
-  document.getElementById('reason').innerHTML = s.pending_reason ? ('<strong>待機理由:</strong> ' + (s.pending_kind || '-') + ' / ' + s.pending_reason.replace(/\n/g, '<br>')) : '';
+
+  let reasonHtml = '';
+  if (s.pending_reason) {
+    reasonHtml = '<strong>待機理由:</strong> ' + (s.pending_kind || '-') + ' / ' + s.pending_reason.replace(/\n/g, '<br>');
+    if ((s.pending_count || 0) > 1) {
+      reasonHtml += '<br><strong>キュー:</strong> 他 ' + (s.pending_count - 1) + ' 件の承認待ちがあります';
+    }
+  }
+  document.getElementById('reason').innerHTML = reasonHtml;
   document.getElementById('stop').innerHTML = s.status === 'stopped'
     ? ('<strong>終了理由:</strong> ' + (s.stop_reason_label || s.stop_reason || '-') + (s.stop_reason_detail ? ' / ' + s.stop_reason_detail : ''))
     : '';
@@ -168,7 +183,7 @@ async function act(action, withMessage = false) {
   await fetch('/respond', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action, message })
+    body: JSON.stringify({ action, message, request_id: currentRequestId })
   });
   if (action !== 'explain') {
     document.getElementById('message').value = '';
@@ -220,7 +235,9 @@ def make_app(agent_wrapper: Approvable, state: SharedState) -> Flask:
         else:
             action = "approve"
         message = str(payload.get("message", ""))
-        agent_wrapper.respond(action, message)
+        raw_request_id = payload.get("request_id")
+        request_id = raw_request_id if isinstance(raw_request_id, int) else None
+        agent_wrapper.respond(action, message, request_id=request_id)
         return jsonify({"ok": True})
 
     @app.route("/approve", methods=["POST"])

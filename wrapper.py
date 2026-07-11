@@ -16,7 +16,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from . import ollama_client, qr_display, rules
@@ -30,6 +30,7 @@ StopReason = Literal[
     "max_conversation_turns",
     "terminated",
 ]
+ApprovalCallback = Callable[["HumanResponse"], None]
 
 _STOP_REASON_LABELS: dict[StopReason, str] = {
     "running": "実行中",
@@ -63,6 +64,20 @@ class HumanResponse:
         return "却下"
 
 
+@dataclass(slots=True)
+class ApprovalRequest:
+    id: int
+    kind: str
+    reason: str
+    created_at: str
+    callback: ApprovalCallback = field(repr=False)
+    response: HumanResponse | None = None
+
+    def resolve(self, response: HumanResponse) -> None:
+        self.response = response
+        self.callback(response)
+
+
 class SharedState:
     """dashboard.py と wrapper.py の間で共有する状態。スレッドセーフにするためlockを持つ。"""
 
@@ -70,8 +85,6 @@ class SharedState:
         self.lock = threading.Lock()
         self.log: collections.deque[str] = collections.deque(maxlen=log_maxlen)
         self.status = "starting"  # starting | running | waiting_human | stopped
-        self.pending_reason: str | None = None
-        self.pending_kind: str | None = None
         self.last_summary: str | None = None
         self.last_summary_time: str | None = None
         self.stop_reason: StopReason = "running"
@@ -79,8 +92,8 @@ class SharedState:
         self.dashboard_url: str | None = None
         self.qr_code_data_url: str | None = None
         self.process: subprocess.Popen[str] | None = None
-        self.approve_event = threading.Event()
-        self.latest_response = HumanResponse("approve")
+        self._pending_requests: collections.deque[ApprovalRequest] = collections.deque()
+        self._next_request_id = 1
 
     def append_log(self, line: str) -> None:
         with self.lock:
@@ -94,19 +107,30 @@ class SharedState:
         with self.lock:
             return "\n".join(self.log)
 
-    def set_waiting(self, kind: str, reason: str) -> None:
+    def set_waiting(
+        self,
+        kind: str,
+        reason: str,
+        callback: ApprovalCallback | None = None,
+    ) -> ApprovalRequest:
+        created_at = datetime.datetime.now().strftime("%H:%M:%S")
         with self.lock:
+            request = ApprovalRequest(
+                id=self._next_request_id,
+                kind=kind,
+                reason=reason,
+                created_at=created_at,
+                callback=callback or (lambda response: None),
+            )
+            self._next_request_id += 1
+            self._pending_requests.append(request)
             self.status = "waiting_human"
-            self.pending_kind = kind
-            self.pending_reason = reason
-            self.latest_response = HumanResponse("approve")
-        self.approve_event.clear()
+        return request
 
     def set_running(self) -> None:
         with self.lock:
-            self.status = "running"
-            self.pending_kind = None
-            self.pending_reason = None
+            if not self._pending_requests:
+                self.status = "running"
             self.stop_reason = "running"
             self.stop_reason_detail = None
 
@@ -120,19 +144,28 @@ class SharedState:
             self.dashboard_url = url
             self.qr_code_data_url = qr_display.make_qr_data_url(url)
 
-    def set_response(self, response: HumanResponse) -> None:
+    def respond(
+        self,
+        response: HumanResponse,
+        request_id: int | None = None,
+    ) -> ApprovalRequest | None:
         with self.lock:
-            self.latest_response = response
-
-    def consume_response(self) -> HumanResponse:
-        with self.lock:
-            return self.latest_response
+            if not self._pending_requests:
+                return None
+            current = self._pending_requests[0]
+            if request_id is not None and current.id != request_id:
+                return None
+            request = self._pending_requests.popleft()
+            request.response = response
+            if self.status != "stopped":
+                self.status = "waiting_human" if self._pending_requests else "running"
+        request.resolve(response)
+        return request
 
     def set_stopped(self, reason: StopReason, detail: str | None = None) -> None:
         with self.lock:
             self.status = "stopped"
-            self.pending_kind = None
-            self.pending_reason = None
+            self._pending_requests.clear()
             self.stop_reason = reason
             self.stop_reason_detail = detail
 
@@ -142,10 +175,13 @@ class SharedState:
 
     def snapshot(self) -> dict[str, Any]:
         with self.lock:
+            current = self._pending_requests[0] if self._pending_requests else None
             return {
                 "status": self.status,
-                "pending_kind": self.pending_kind,
-                "pending_reason": self.pending_reason,
+                "pending_kind": current.kind if current else None,
+                "pending_reason": current.reason if current else None,
+                "pending_count": len(self._pending_requests),
+                "pending_request_id": current.id if current else None,
                 "last_summary": self.last_summary,
                 "last_summary_time": self.last_summary_time,
                 "stop_reason": self.stop_reason,
@@ -237,18 +273,15 @@ class AgentWrapper:
     def _handle_line(self, line: str) -> None:
         match = rules.check_destructive(line)
         if match.matched:
-            self.state.set_waiting("destructive", match.reason)
             self.notifier("high", "削除系の操作を検知", match.reason)
-            self._wait_for_approval()
+            self._wait_for_approval("destructive", match.reason)
             return
 
         kind, content = rules.parse_agent_signal(line)
         if kind == "stop":
-            self.state.set_waiting(
-                "stop_request", content or "エージェントが停止を要求"
-            )
-            self.notifier("high", "エージェントが停止を要求", content or "")
-            self._wait_for_approval()
+            reason = content or "エージェントが停止を要求"
+            self.notifier("high", "エージェントが停止を要求", reason)
+            self._wait_for_approval("stop_request", reason)
         elif kind == "permission":
             judged = ollama_client.judge_permission(
                 content or "", model=self.ollama_model
@@ -257,9 +290,9 @@ class AgentWrapper:
                 self._send_to_stdin("y\n")
                 self.state.append_log(f"(ollama自動承認: {content})")
             else:
-                self.state.set_waiting("permission_escalated", content or "権限確認")
-                self.notifier("medium", "権限確認(要判断)", content or "")
-                self._wait_for_approval()
+                reason = content or "権限確認"
+                self.notifier("medium", "権限確認(要判断)", reason)
+                self._wait_for_approval("permission_escalated", reason)
 
     def _checkin_loop(self) -> None:
         while not self._stop_flag.is_set():
@@ -272,15 +305,20 @@ class AgentWrapper:
             self.notifier("low", "定期チェックイン", summary)
 
             if ollama_client.judge_is_major_decision(recent, model=self.ollama_model):
-                self.state.set_waiting("major_decision", summary)
                 self.notifier("medium", "方針決定っぽい相談を検知", summary)
-                self._wait_for_approval()
+                self._wait_for_approval("major_decision", summary)
 
-    def _wait_for_approval(self) -> HumanResponse:
-        self.state.approve_event.wait()
-        response = self.state.consume_response()
-        self.state.set_running()
-        return response
+    def _wait_for_approval(self, kind: str, reason: str) -> HumanResponse:
+        event = threading.Event()
+        response_holder: list[HumanResponse] = []
+
+        def on_response(response: HumanResponse) -> None:
+            response_holder.append(response)
+            event.set()
+
+        self.state.set_waiting(kind, reason, on_response)
+        event.wait()
+        return response_holder[0]
 
     def _send_to_stdin(self, text: str) -> None:
         try:
@@ -292,17 +330,21 @@ class AgentWrapper:
         except Exception as e:
             self.state.append_log(f"(stdin書き込み失敗: {e})")
 
-    def respond(self, action: HumanAction, message: str = "") -> None:
-        if self.state.snapshot()["status"] != "waiting_human":
-            return
+    def respond(
+        self,
+        action: HumanAction,
+        message: str = "",
+        request_id: int | None = None,
+    ) -> None:
         response = HumanResponse(action=action, message=message.strip())
-        self.state.set_response(response)
+        resolved = self.state.respond(response, request_id=request_id)
+        if resolved is None:
+            return
         suffix = f": {response.message}" if response.message else ""
         self.state.append_log(f"(人間が{response.log_label()}しました{suffix})")
         self._send_to_stdin(response.to_agent_text() + "\n")
         if action == "deny":
             self._deny_count += 1
-        self.state.approve_event.set()
 
     def approve(self) -> None:
         self.respond("approve")
