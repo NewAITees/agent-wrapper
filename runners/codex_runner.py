@@ -37,6 +37,7 @@ codex mcp-server にMCPクライアントとして接続し、実際のCodexを�
 参照: docs/agent_wrapper_sdk_integration_plan.md セクション3.2
 """
 
+import logging
 import shutil
 from typing import Any
 
@@ -45,7 +46,26 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from .. import rules
+from ..wrapper import summarize_log_text
 from .base import ApprovalRunnerBase
+
+
+class _CodexEventValidationFilter(logging.Filter):
+    """codex/event独自通知に限り、MCP SDKの既知の検証警告を落とす。"""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        return not (
+            "Failed to validate notification" in message and "codex/event" in message
+        )
+
+
+def _install_codex_event_filter() -> None:
+    root_logger = logging.getLogger()
+    if not any(
+        isinstance(item, _CodexEventValidationFilter) for item in root_logger.filters
+    ):
+        root_logger.addFilter(_CodexEventValidationFilter())
 
 
 def _codex_cmd() -> str:
@@ -67,6 +87,8 @@ class CodexRunner(ApprovalRunnerBase):
         self._thread_id: str | None = None
 
     async def _run_async(self) -> None:
+        _install_codex_event_filter()
+        self.state.append_log("[codex] codex/eventの既知のMCP検証警告だけを抑制します")
         server = StdioServerParameters(command=_codex_cmd(), args=["mcp-server"])
         async with stdio_client(server) as (read, write):
             async with ClientSession(
@@ -129,9 +151,11 @@ class CodexRunner(ApprovalRunnerBase):
         for block in result.content:
             if isinstance(block, t.TextContent):
                 last_text = block.text
-                self.state.append_log(block.text)
+                self.state.append_log(summarize_log_text(block.text))
             else:
-                self.state.append_log(f"[codex:{type(block).__name__}] {block}")
+                self.state.append_log(
+                    f"[codex:{type(block).__name__}] {summarize_log_text(str(block))}"
+                )
         return last_text
 
     def _describe_elicitation(self, params: t.ElicitRequestParams) -> str:
@@ -170,7 +194,7 @@ class CodexRunner(ApprovalRunnerBase):
             [str(path) for path in paths] if paths else None, self.cwd
         )
 
-        self.state.append_log(f"[承認要求] {text}")
+        self.state.append_log(f"[承認要求] {summarize_log_text(text)}")
 
         response = await self._gate(text, l1_facts)
         return self._elicit_result(

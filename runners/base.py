@@ -29,7 +29,13 @@ import asyncio
 import threading
 
 from .. import ollama_client, rules
-from ..wrapper import HumanAction, HumanResponse, Notifier, SharedState
+from ..wrapper import (
+    HumanAction,
+    HumanResponse,
+    Notifier,
+    SharedState,
+    format_audit_log,
+)
 
 
 class ApprovalRunnerBase:
@@ -96,15 +102,25 @@ class ApprovalRunnerBase:
             explanation = ollama_client.explain_operation(text, model=self.ollama_model)
             reason = f"{classification['headline']} / {match.reason}\n{explanation}"
             self.notifier("high", "削除系の操作を検知", reason)
+            self.state.append_log(
+                format_audit_log("rules", "エスカレーション", text, match.reason)
+            )
             return await self._wait_for_approval("destructive", reason, detail=text)
 
         judged = ollama_client.judge_permission(
             text, model=self.ollama_model, l1_facts=l1_facts
         )
         if judged["decision"] == "allow":
-            self.state.append_log(f"(ollama自動承認: {text})")
+            self.state.append_log(
+                format_audit_log("ollama", "自動承認", text, str(judged.get("raw", "")))
+            )
             return HumanResponse("approve")
 
+        self.state.append_log(
+            format_audit_log(
+                "ollama", "エスカレーション", text, str(judged.get("raw", ""))
+            )
+        )
         explanation = ollama_client.explain_operation(text, model=self.ollama_model)
         self.notifier("medium", "権限確認(要判断)", explanation)
         return await self._wait_for_approval(
@@ -118,9 +134,18 @@ class ApprovalRunnerBase:
         if judged["decision"] == "not_question":
             return None
         if judged["decision"] == "allow":
-            self.state.append_log("(ollamaが会話上の確認に自動応答: y)")
+            self.state.append_log(
+                format_audit_log(
+                    "ollama", "自動承認", last_text, str(judged.get("raw", ""))
+                )
+            )
             return "y"
 
+        self.state.append_log(
+            format_audit_log(
+                "ollama", "エスカレーション", last_text, str(judged.get("raw", ""))
+            )
+        )
         explanation = ollama_client.explain_operation(
             last_text, model=self.ollama_model
         )
@@ -170,6 +195,15 @@ class ApprovalRunnerBase:
             self._deny_count += 1
         suffix = f": {response.message}" if response.message else ""
         self.state.append_log(f"(人間が{response.log_label()}しました{suffix})")
+        target = resolved.detail or resolved.reason
+        self.state.append_log(
+            format_audit_log(
+                "人間",
+                response.log_label(),
+                target,
+                response.message or resolved.reason,
+            )
+        )
 
     def approve(self) -> None:
         self.respond("approve")

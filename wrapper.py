@@ -12,6 +12,7 @@ Claude Code / Codex をサブプロセスとして起動し、出力を監視す
 
 import collections
 import datetime
+import re
 import subprocess
 import threading
 from collections.abc import Callable
@@ -30,6 +31,32 @@ StopReason = Literal[
     "terminated",
 ]
 ApprovalCallback = Callable[["HumanResponse"], None]
+
+_LOG_TEXT_LIMIT = 400
+_LOG_TEXT_HEAD = 200
+
+
+def summarize_log_text(text: str) -> str:
+    """ログ表示だけを短縮する。承認判定やApprovalRequest.detailには使わない。"""
+    one_line = text.replace("\r", "").replace("\n", "\\n")
+    if len(one_line) <= _LOG_TEXT_LIMIT:
+        return one_line
+    target_match = re.search(
+        r"\bSet-Content\s+(?:(?:-LiteralPath|-Path)\s+)?[\"']?([^\"'|;\r\n]+)",
+        text,
+        re.IGNORECASE,
+    )
+    target = target_match.group(1).strip() if target_match else "抽出不可"
+    return f"{one_line[:_LOG_TEXT_HEAD]}…(全{len(text)}文字、対象: {target})"
+
+
+def format_audit_log(decider: str, result: str, target: str, reason: str = "") -> str:
+    """承認判定をgrep可能な統一形式の1行にする。"""
+    line = f"[監査] 判定者={decider} 結果={result} 対象={summarize_log_text(target)}"
+    if reason:
+        line += f" 理由={summarize_log_text(reason)}"
+    return line
+
 
 _STOP_REASON_LABELS: dict[StopReason, str] = {
     "running": "実行中",
@@ -280,6 +307,9 @@ class AgentWrapper:
             classification = ollama_client.classify_destructive_match(line)
             reason = f"{classification['headline']} / {match.reason}"
             self.notifier("high", "削除系の操作を検知", reason)
+            self.state.append_log(
+                format_audit_log("rules", "エスカレーション", line, match.reason)
+            )
             self._wait_for_approval("destructive", reason, detail=line)
             return
 
@@ -287,6 +317,9 @@ class AgentWrapper:
         if kind == "stop":
             reason = content or "エージェントが停止を要求"
             self.notifier("high", "エージェントが停止を要求", reason)
+            self.state.append_log(
+                format_audit_log("rules", "エスカレーション", line, reason)
+            )
             self._wait_for_approval("stop_request", reason, detail=line)
         elif kind == "permission":
             judged = ollama_client.judge_permission(
@@ -294,8 +327,23 @@ class AgentWrapper:
             )
             if judged["decision"] == "allow":
                 self._send_to_stdin("y\n")
-                self.state.append_log(f"(ollama自動承認: {content})")
+                self.state.append_log(
+                    format_audit_log(
+                        "ollama",
+                        "自動承認",
+                        content or "",
+                        str(judged.get("raw", "")),
+                    )
+                )
             else:
+                self.state.append_log(
+                    format_audit_log(
+                        "ollama",
+                        "エスカレーション",
+                        content or "",
+                        str(judged.get("raw", "")),
+                    )
+                )
                 reason = ollama_client.explain_operation(
                     content or "権限確認", model=self.ollama_model
                 )
@@ -320,6 +368,9 @@ class AgentWrapper:
 
             if ollama_client.judge_is_major_decision(recent, model=self.ollama_model):
                 self.notifier("medium", "方針決定っぽい相談を検知", summary)
+                self.state.append_log(
+                    format_audit_log("ollama", "エスカレーション", recent, summary)
+                )
                 self._wait_for_approval("major_decision", summary, detail=recent)
 
     def _wait_for_approval(
@@ -358,6 +409,15 @@ class AgentWrapper:
             return
         suffix = f": {response.message}" if response.message else ""
         self.state.append_log(f"(人間が{response.log_label()}しました{suffix})")
+        target = resolved.detail or resolved.reason
+        self.state.append_log(
+            format_audit_log(
+                "人間",
+                response.log_label(),
+                target,
+                response.message or resolved.reason,
+            )
+        )
         self._send_to_stdin(response.to_agent_text() + "\n")
         if action == "deny":
             self._deny_count += 1
