@@ -73,10 +73,14 @@ def summarize_chunk(log_chunk: str, model: str = DEFAULT_MODEL) -> str:
 
 
 def judge_permission(
-    context: str, model: str = DEFAULT_MODEL, l1_facts: str | None = None
+    context: str,
+    model: str = DEFAULT_MODEL,
+    l1_facts: str | None = None,
+    approved_plan: str | None = None,
 ) -> dict[str, str]:
     """ルールで白黒つかない権限確認を一次判定する。不明時はescalate。"""
     facts = l1_facts or "対象パス: 不明"
+    plan = approved_plan or "(承認済み計画なし)"
     prompt = (
         "コーディングエージェントが次の操作について許可を求めています。\n"
         "L0(ALLOW): 外部送信を伴わない読み取り・検索・一覧、git status/diff/log、"
@@ -90,6 +94,10 @@ def judge_permission(
         "以下の機械判定事実を推測で変更せず考慮してください。対象パス不明なら、"
         "操作内容だけで安全性が明白な場合を除きESCALATEしてください。\n"
         f"機械判定事実:\n{facts}\n"
+        f"承認済みの実装計画:\n{plan}\n"
+        "この操作が計画の範囲内ならL0/L1基準に従いALLOW、"
+        "計画から明らかに外れる場合はESCALATEしてください。"
+        "計画承認はrulesによる強制確認やL3判定を上書きしません。\n"
         "出力は ALLOW か ESCALATE のどちらか一語のみです。\n\n"
         f"操作内容: {context}"
     )

@@ -46,6 +46,12 @@ class ApprovalRunnerBase:
     """
 
     _MAX_CONVERSATIONAL_TURNS = 5
+    PLAN_PROMPT_PREFIX = (
+        "作業を始める前に、最初の応答で実装計画だけを提示してください。"
+        "含める項目: 目的 / 方針 / 変更範囲(ファイル・モジュール) / 追加依存 / "
+        "影響・リスク / 戻し方 / 検証方法。"
+        "計画の承認が返ってくるまで作業を開始しないこと。\n\n"
+    )
 
     def __init__(
         self,
@@ -61,6 +67,10 @@ class ApprovalRunnerBase:
         self.ollama_model = ollama_model
         self.notifier: Notifier = notifier or (lambda level, title, body: None)
         self._deny_count = 0
+
+    @property
+    def initial_prompt(self) -> str:
+        return self.PLAN_PROMPT_PREFIX + self.prompt
 
     def start(self) -> threading.Thread:
         self.state.set_running()
@@ -108,7 +118,10 @@ class ApprovalRunnerBase:
             return await self._wait_for_approval("destructive", reason, detail=text)
 
         judged = ollama_client.judge_permission(
-            text, model=self.ollama_model, l1_facts=l1_facts
+            text,
+            model=self.ollama_model,
+            l1_facts=l1_facts,
+            approved_plan=self.state.snapshot()["approved_plan"],
         )
         if judged["decision"] == "allow":
             self.state.append_log(
@@ -164,6 +177,19 @@ class ApprovalRunnerBase:
         self.notifier("medium", "会話確認が上限に到達", reason)
         response = await self._wait_for_approval("conversation_limit", reason)
         return response.action == "approve"
+
+    async def _request_plan_approval(self, plan_text: str) -> str:
+        """応答全文を計画として人間へ提示し、承認時だけ共有状態へ保存する。"""
+        # 他の承認待ちと同様にプッシュ通知も送る(外出先で計画到着に気づけるように)
+        self.notifier("high", "実装計画の承認待ち", plan_text[:400])
+        response = await self._wait_for_approval(
+            "plan_approval", "実装計画を承認しますか?", detail=plan_text
+        )
+        if response.action == "approve":
+            self.state.set_approved_plan(plan_text)
+            suffix = f"。補足: {response.message}" if response.message else ""
+            return f"y(計画を承認します){suffix}"
+        return response.to_agent_text()
 
     async def _wait_for_approval(
         self, kind: str, reason: str, detail: str = ""

@@ -111,7 +111,7 @@ class CodexRunner(ApprovalRunnerBase):
                 result = await session.call_tool(
                     "codex",
                     arguments={
-                        "prompt": self.prompt,
+                        "prompt": self.initial_prompt,
                         "cwd": self.cwd,
                         "approval-policy": "untrusted",
                         "sandbox": self.sandbox,
@@ -123,10 +123,16 @@ class CodexRunner(ApprovalRunnerBase):
 
     async def _converse(self, session: ClientSession, last_text: str) -> None:
         turns = 0
+        plan_approved = self.state.snapshot()["approved_plan"] is not None
         while True:
             if not last_text:
                 return
-            reply = await self._conversational_reply(last_text)
+            reply: str | None
+            if not plan_approved:
+                reply = await self._request_plan_approval(last_text)
+                plan_approved = self.state.snapshot()["approved_plan"] is not None
+            else:
+                reply = await self._conversational_reply(last_text)
             if reply is None:
                 return
             if self._thread_id is None:

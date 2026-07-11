@@ -243,6 +243,13 @@ PAGE = r"""
     </section>
 
     <section class="panel">
+      <details id="approved-plan-box">
+        <summary>承認済みの実装計画</summary>
+        <pre class="detail-pre" id="approved-plan">未承認</pre>
+      </details>
+    </section>
+
+    <section class="panel">
       <div class="section-head">
         <h3>承認待ちの判断材料</h3>
       </div>
@@ -362,6 +369,7 @@ async function refresh() {
   statusEl.className = 'status ' + (s.status === 'waiting_human' ? 'waiting' : (s.status === 'running' ? 'running' : 'stopped'));
 
   document.getElementById('summary').textContent = s.last_summary ? ('直近要約 (' + (s.last_summary_time || '-') + '): ' + s.last_summary) : '';
+  document.getElementById('approved-plan').textContent = s.approved_plan || '未承認';
 
   let reasonHtml = '';
   if (s.pending_reason) {

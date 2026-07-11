@@ -118,6 +118,7 @@ class SharedState:
         self.stop_reason_detail: str | None = None
         self.dashboard_url: str | None = None
         self.qr_code_data_url: str | None = None
+        self.approved_plan: str | None = None
         self.process: subprocess.Popen[str] | None = None
         self._pending_requests: collections.deque[ApprovalRequest] = collections.deque()
         self._next_request_id = 1
@@ -167,6 +168,10 @@ class SharedState:
         with self.lock:
             self.last_summary = text
             self.last_summary_time = datetime.datetime.now().strftime("%H:%M:%S")
+
+    def set_approved_plan(self, text: str) -> None:
+        with self.lock:
+            self.approved_plan = text
 
     def set_qr_code(self, url: str) -> None:
         with self.lock:
@@ -219,6 +224,7 @@ class SharedState:
                 "stop_reason_detail": self.stop_reason_detail,
                 "dashboard_url": self.dashboard_url,
                 "qr_code_data_url": self.qr_code_data_url,
+                "approved_plan": self.approved_plan,
             }
 
 

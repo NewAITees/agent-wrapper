@@ -73,16 +73,22 @@ class ClaudeRunner(ApprovalRunnerBase):
             setting_sources=["project"],
         )
         async with ClaudeSDKClient(options=options) as client:
-            await client.query(self.prompt)
+            await client.query(self.initial_prompt)
             await self._converse(client)
 
     async def _converse(self, client: ClaudeSDKClient) -> None:
         turns = 0
+        plan_approved = self.state.snapshot()["approved_plan"] is not None
         while True:
             last_text = self._read_turn(await self._collect_turn(client))
             if not last_text:
                 return
-            reply = await self._conversational_reply(last_text)
+            reply: str | None
+            if not plan_approved:
+                reply = await self._request_plan_approval(last_text)
+                plan_approved = self.state.snapshot()["approved_plan"] is not None
+            else:
+                reply = await self._conversational_reply(last_text)
             if reply is None:
                 return
             if turns >= self._MAX_CONVERSATIONAL_TURNS:
