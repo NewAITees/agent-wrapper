@@ -20,7 +20,9 @@ claude-agent-sdk経由で実際のClaude Codeを動かすrunner。
   別途独立して担保される。
 - setting_sources=["project"] を指定し、この操作者個人のグローバル設定
   (~/.claude/CLAUDE.md等)がラップ対象の(無関係な)セッションに紛れ込まないようにする。
-  ただしこれだけでは混入を完全には防げないことが実機で判明している(原因未確定)。
+  2026-07-11の実測: 未指定(SDK既定)だとユーザーレベル設定(CLAUDE.md+hooks)が
+  混入するが、["project"]指定では混入しないことを確認済み(根本原因は未指定時の
+  SDK既定挙動)。ターゲットプロジェクト自身のCLAUDE.md/settingsは意図通り尊重される。
 - AgentWrapper(wrapper.py, mock/subprocess方式)と同じ公開インターフェース
   (start/respond/approve/deny/stop)を持ち、dashboard.py/main.pyから透過的に扱える。
 
