@@ -88,10 +88,11 @@ class ApprovalRunnerBase:
         """
         match = rules.check_destructive(text)
         if match.matched:
+            classification = ollama_client.classify_destructive_match(text)
             explanation = ollama_client.explain_operation(text, model=self.ollama_model)
-            reason = f"{match.reason}\n{explanation}"
+            reason = f"{classification['headline']} / {match.reason}\n{explanation}"
             self.notifier("high", "削除系の操作を検知", reason)
-            return await self._wait_for_approval("destructive", reason)
+            return await self._wait_for_approval("destructive", reason, detail=text)
 
         judged = ollama_client.judge_permission(text, model=self.ollama_model)
         if judged["decision"] == "allow":
@@ -100,7 +101,9 @@ class ApprovalRunnerBase:
 
         explanation = ollama_client.explain_operation(text, model=self.ollama_model)
         self.notifier("medium", "権限確認(要判断)", explanation)
-        return await self._wait_for_approval("permission_escalated", explanation)
+        return await self._wait_for_approval(
+            "permission_escalated", explanation, detail=text
+        )
 
     async def _conversational_reply(self, last_text: str) -> str | None:
         judged = ollama_client.judge_conversational_question(
@@ -117,11 +120,13 @@ class ApprovalRunnerBase:
         )
         self.notifier("medium", "エージェントからの確認(要判断)", explanation)
         response = await self._wait_for_approval(
-            "conversational_escalated", explanation
+            "conversational_escalated", explanation, detail=last_text
         )
         return response.to_agent_text()
 
-    async def _wait_for_approval(self, kind: str, reason: str) -> HumanResponse:
+    async def _wait_for_approval(
+        self, kind: str, reason: str, detail: str = ""
+    ) -> HumanResponse:
         loop = asyncio.get_running_loop()
         response_future: asyncio.Future[HumanResponse] = loop.create_future()
 
@@ -132,7 +137,7 @@ class ApprovalRunnerBase:
 
             loop.call_soon_threadsafe(resolve)
 
-        self.state.set_waiting(kind, reason, on_response)
+        self.state.set_waiting(kind, reason, on_response, detail=detail)
         return await response_future
 
     def respond(

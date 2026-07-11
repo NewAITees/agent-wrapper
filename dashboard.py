@@ -5,7 +5,7 @@ Mac / iPad / Android のブラウザから http://<WSL2のIP>:8765/ でアクセ
 
 from typing import Protocol
 
-from flask import Flask, Response, jsonify, request, render_template_string
+from flask import Flask, Response, jsonify, render_template_string, request
 
 from .wrapper import HumanAction, SharedState
 
@@ -33,10 +33,10 @@ PAGE = r"""
 <style>
   :root {
     color-scheme: dark;
-    --bg: #0f172a;
-    --panel: #111827;
-    --panel-soft: #1f2937;
-    --line: #334155;
+    --bg: #08111f;
+    --panel: rgba(15, 23, 42, 0.92);
+    --panel-soft: #172033;
+    --line: rgba(148, 163, 184, 0.22);
     --text: #e5eefb;
     --muted: #94a3b8;
     --good: #34d399;
@@ -48,72 +48,190 @@ PAGE = r"""
   body {
     margin: 0;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    background: radial-gradient(circle at top, #1e293b 0%, var(--bg) 55%);
+    background:
+      radial-gradient(circle at top, rgba(56, 189, 248, 0.18), transparent 28%),
+      linear-gradient(180deg, #0f172a 0%, var(--bg) 100%);
     color: var(--text);
-    padding: 1rem;
+    padding: 0.8rem;
   }
-  .wrap { max-width: 1100px; margin: 0 auto; display: grid; gap: 1rem; }
+  .wrap {
+    max-width: 960px;
+    margin: 0 auto;
+    display: grid;
+    gap: 0.85rem;
+  }
   .panel {
-    background: rgba(17, 24, 39, 0.92);
-    border: 1px solid rgba(148, 163, 184, 0.18);
-    border-radius: 16px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 18px;
     padding: 1rem;
-    box-shadow: 0 20px 60px rgba(15, 23, 42, 0.35);
+    box-shadow: 0 20px 60px rgba(2, 6, 23, 0.28);
   }
-  .top { display: grid; grid-template-columns: 1.6fr 1fr; gap: 1rem; }
-  .status { font-size: 1.25rem; font-weight: 700; }
+  .status {
+    font-size: 1.2rem;
+    font-weight: 700;
+  }
   .status.waiting { color: var(--warn); }
   .status.running { color: var(--good); }
   .status.stopped { color: var(--muted); }
-  .meta, .reason, .stop { margin-top: 0.6rem; color: var(--muted); white-space: pre-wrap; }
-  .stop strong, .reason strong { color: var(--text); }
-  .qr-card { display: grid; place-items: center; gap: 0.75rem; }
-  .qr-card img { width: min(100%, 260px); background: white; padding: 0.75rem; border-radius: 12px; }
-  .url { font-size: 0.9rem; color: var(--accent); word-break: break-all; }
-  .controls { display: grid; gap: 0.75rem; }
+  .meta, .reason, .stop, .detail-meta {
+    margin-top: 0.65rem;
+    color: var(--muted);
+    white-space: pre-wrap;
+  }
+  .reason strong, .stop strong, .detail-meta strong { color: var(--text); }
+  .controls {
+    display: grid;
+    gap: 0.75rem;
+  }
   textarea {
-    width: 100%; min-height: 110px; resize: vertical; border-radius: 12px;
-    border: 1px solid var(--line); background: #020617; color: var(--text);
-    padding: 0.8rem; font: inherit;
+    width: 100%;
+    min-height: 110px;
+    resize: vertical;
+    border-radius: 12px;
+    border: 1px solid var(--line);
+    background: #020617;
+    color: var(--text);
+    padding: 0.8rem;
+    font: inherit;
   }
-  .buttons { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .buttons {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.55rem;
+  }
   button {
-    border: none; border-radius: 999px; padding: 0.7rem 1rem; font: inherit; font-weight: 700;
-    cursor: pointer; color: #020617;
+    border: none;
+    border-radius: 999px;
+    padding: 0.78rem 1rem;
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+    color: #020617;
   }
-  button[disabled] { opacity: 0.4; cursor: not-allowed; }
+  button[disabled] { opacity: 0.42; cursor: not-allowed; }
   .approve { background: var(--good); }
   .explain { background: var(--accent); }
   .deny { background: var(--bad); }
-  .copy { background: #cbd5e1; }
-  .log-head { display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; }
-  pre {
-    margin: 0; padding: 1rem; background: #020617; border: 1px solid #0f172a; border-radius: 12px;
-    min-height: 50vh; max-height: 60vh; overflow: auto; white-space: pre-wrap; user-select: text;
+  .copy, .toggle {
+    background: #cbd5e1;
+  }
+  .section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-bottom: 0.6rem;
+  }
+  .section-head h3 {
+    margin: 0;
+    font-size: 1rem;
+  }
+  .subactions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+  .pending-box {
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: rgba(2, 6, 23, 0.72);
+    overflow: hidden;
+  }
+  details summary {
+    cursor: pointer;
+    list-style: none;
+    padding: 0.85rem 1rem;
+    font-weight: 700;
+  }
+  details summary::-webkit-details-marker { display: none; }
+  .detail-pre, .log-pre {
+    margin: 0;
+    padding: 1rem;
+    background: #020617;
+    color: var(--text);
+    white-space: pre-wrap;
+    user-select: text;
     font: 0.88rem/1.45 "Cascadia Code", Consolas, monospace;
   }
-  @media (max-width: 840px) {
-    .top { grid-template-columns: 1fr; }
-    .buttons button { flex: 1 1 100%; }
+  .detail-pre {
+    max-height: 32vh;
+    overflow: auto;
+    border-top: 1px solid #0f172a;
+  }
+  .log-pre {
+    min-height: 44vh;
+    max-height: 62vh;
+    overflow: auto;
+    border-radius: 12px;
+    border: 1px solid #0f172a;
+  }
+  .toggles {
+    display: flex;
+    gap: 0.75rem;
+    align-items: center;
+    flex-wrap: wrap;
+    color: var(--muted);
+  }
+  .toggle-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .qr-details {
+    background: rgba(2, 6, 23, 0.35);
+    border-radius: 14px;
+  }
+  .qr-body {
+    padding: 0 1rem 1rem;
+    display: grid;
+    gap: 0.8rem;
+    justify-items: center;
+  }
+  .qr-body img {
+    width: min(100%, 240px);
+    background: white;
+    padding: 0.75rem;
+    border-radius: 12px;
+  }
+  .url {
+    color: var(--accent);
+    word-break: break-all;
+    font-size: 0.92rem;
+    text-align: center;
+  }
+  @media (min-width: 760px) {
+    body { padding: 1rem; }
+    .buttons { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
 </style>
 </head>
 <body>
   <div class="wrap">
-    <div class="top">
-      <section class="panel">
-        <div class="status" id="status">読み込み中...</div>
-        <div class="meta" id="summary"></div>
-        <div class="reason" id="reason"></div>
-        <div class="stop" id="stop"></div>
-      </section>
-      <section class="panel qr-card">
-        <img id="qr" alt="ダッシュボードQRコード">
-        <div class="url" id="dashboard-url"></div>
-      </section>
-    </div>
+    <section class="panel">
+      <div class="status" id="status">読み込み中...</div>
+      <div class="meta" id="summary"></div>
+      <div class="reason" id="reason"></div>
+      <div class="stop" id="stop"></div>
+      <details class="qr-details">
+        <summary>QRコードを表示</summary>
+        <div class="qr-body">
+          <img id="qr" alt="ダッシュボードQRコード">
+          <div class="url" id="dashboard-url"></div>
+        </div>
+      </details>
+    </section>
 
     <section class="panel controls">
+      <div class="section-head">
+        <h3>承認操作</h3>
+        <div class="toggles">
+          <label class="toggle-row" for="sound-toggle">
+            <input type="checkbox" id="sound-toggle">
+            通知音
+          </label>
+        </div>
+      </div>
       <label for="message">エージェントへのメッセージ</label>
       <textarea id="message" placeholder="必要な補足や質問を書いて送れます"></textarea>
       <div class="buttons">
@@ -125,26 +243,107 @@ PAGE = r"""
     </section>
 
     <section class="panel">
-      <div class="log-head">
-        <h3>ログ</h3>
-        <button class="copy" onclick="copyLog()">全文コピー</button>
+      <div class="section-head">
+        <h3>承認待ちの判断材料</h3>
       </div>
-      <pre id="log"></pre>
+      <div class="detail-meta" id="detail-meta">承認待ちはありません</div>
+      <div class="pending-box">
+        <details id="detail-box">
+          <summary id="detail-summary">対象全文</summary>
+          <pre class="detail-pre" id="detail"></pre>
+        </details>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="section-head">
+        <h3>ログ</h3>
+        <div class="subactions">
+          <button class="copy" onclick="copyLog()">全文コピー</button>
+        </div>
+      </div>
+      <pre class="log-pre" id="log"></pre>
     </section>
   </div>
 
 <script>
 let autoScroll = true;
 let currentRequestId = null;
+let previousStatus = null;
+let previousRequestId = null;
+let audioContext = null;
 const logEl = document.getElementById('log');
+const detailBox = document.getElementById('detail-box');
+const soundToggle = document.getElementById('sound-toggle');
+const SOUND_KEY = 'agent_wrapper_sound_enabled';
+
+function loadSoundPreference() {
+  const saved = localStorage.getItem(SOUND_KEY);
+  soundToggle.checked = saved !== '0';
+}
+
+function saveSoundPreference() {
+  localStorage.setItem(SOUND_KEY, soundToggle.checked ? '1' : '0');
+}
+
+function ensureAudioContext() {
+  if (!audioContext) {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (AudioCtx) {
+      audioContext = new AudioCtx();
+    }
+  }
+  if (audioContext && audioContext.state === 'suspended') {
+    audioContext.resume().catch(() => {});
+  }
+  return audioContext;
+}
+
+function primeAudio() {
+  ensureAudioContext();
+}
+
+function playNotificationSound() {
+  if (!soundToggle.checked) {
+    return;
+  }
+  const ctx = ensureAudioContext();
+  if (!ctx) {
+    return;
+  }
+  const now = ctx.currentTime;
+  const oscillator = ctx.createOscillator();
+  const gain = ctx.createGain();
+  oscillator.type = 'sine';
+  oscillator.frequency.setValueAtTime(880, now);
+  oscillator.frequency.exponentialRampToValueAtTime(660, now + 0.18);
+  gain.gain.setValueAtTime(0.0001, now);
+  gain.gain.exponentialRampToValueAtTime(0.05, now + 0.01);
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.24);
+  oscillator.connect(gain);
+  gain.connect(ctx.destination);
+  oscillator.start(now);
+  oscillator.stop(now + 0.25);
+}
+
 logEl.addEventListener('scroll', () => {
   autoScroll = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 20;
 });
+soundToggle.addEventListener('change', saveSoundPreference);
+document.addEventListener('pointerdown', primeAudio, { once: true });
+document.addEventListener('keydown', primeAudio, { once: true });
 
 function setButtonsEnabled(enabled) {
   for (const id of ['approve-btn', 'approve-msg-btn', 'explain-btn', 'deny-btn']) {
     document.getElementById(id).disabled = !enabled;
   }
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 async function refresh() {
@@ -158,18 +357,36 @@ async function refresh() {
 
   let reasonHtml = '';
   if (s.pending_reason) {
-    reasonHtml = '<strong>待機理由:</strong> ' + (s.pending_kind || '-') + ' / ' + s.pending_reason.replace(/\n/g, '<br>');
+    reasonHtml = '<strong>待機理由:</strong> ' + escapeHtml(s.pending_kind || '-') + ' / ' + escapeHtml(s.pending_reason).replace(/\n/g, '<br>');
     if ((s.pending_count || 0) > 1) {
       reasonHtml += '<br><strong>キュー:</strong> 他 ' + (s.pending_count - 1) + ' 件の承認待ちがあります';
     }
   }
   document.getElementById('reason').innerHTML = reasonHtml;
   document.getElementById('stop').innerHTML = s.status === 'stopped'
-    ? ('<strong>終了理由:</strong> ' + (s.stop_reason_label || s.stop_reason || '-') + (s.stop_reason_detail ? ' / ' + s.stop_reason_detail : ''))
+    ? ('<strong>終了理由:</strong> ' + escapeHtml(s.stop_reason_label || s.stop_reason || '-') + (s.stop_reason_detail ? ' / ' + escapeHtml(s.stop_reason_detail) : ''))
     : '';
   document.getElementById('qr').src = s.qr_code_data_url || '';
   document.getElementById('dashboard-url').textContent = s.dashboard_url || '';
   setButtonsEnabled(s.status === 'waiting_human');
+
+  const waiting = s.status === 'waiting_human' && !!s.pending_reason;
+  document.getElementById('detail-meta').innerHTML = waiting
+    ? ('<strong>現在の承認待ち:</strong> ' + escapeHtml(s.pending_kind || '-') + ' / request #' + (s.pending_request_id ?? '-'))
+    : '承認待ちはありません';
+  document.getElementById('detail').textContent = s.pending_detail || '';
+  detailBox.open = waiting;
+  document.getElementById('detail-summary').textContent = waiting ? '対象全文を表示' : '対象全文';
+
+  if (
+    waiting &&
+    soundToggle.checked &&
+    (previousStatus !== 'waiting_human' || previousRequestId !== currentRequestId)
+  ) {
+    playNotificationSound();
+  }
+  previousStatus = s.status;
+  previousRequestId = currentRequestId;
 
   const log = await fetch('/log?n=400').then(r => r.json());
   logEl.textContent = log.lines.join('\n');
@@ -196,6 +413,7 @@ async function copyLog() {
   await navigator.clipboard.writeText(text);
 }
 
+loadSoundPreference();
 refresh();
 setInterval(refresh, 3000);
 </script>

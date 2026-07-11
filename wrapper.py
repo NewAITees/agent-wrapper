@@ -14,7 +14,6 @@ import collections
 import datetime
 import subprocess
 import threading
-import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -70,7 +69,8 @@ class ApprovalRequest:
     kind: str
     reason: str
     created_at: str
-    callback: ApprovalCallback = field(repr=False)
+    detail: str = ""
+    callback: ApprovalCallback = field(repr=False, default=lambda response: None)
     response: HumanResponse | None = None
 
     def resolve(self, response: HumanResponse) -> None:
@@ -112,6 +112,7 @@ class SharedState:
         kind: str,
         reason: str,
         callback: ApprovalCallback | None = None,
+        detail: str = "",
     ) -> ApprovalRequest:
         created_at = datetime.datetime.now().strftime("%H:%M:%S")
         with self.lock:
@@ -120,6 +121,7 @@ class SharedState:
                 kind=kind,
                 reason=reason,
                 created_at=created_at,
+                detail=detail,
                 callback=callback or (lambda response: None),
             )
             self._next_request_id += 1
@@ -180,6 +182,7 @@ class SharedState:
                 "status": self.status,
                 "pending_kind": current.kind if current else None,
                 "pending_reason": current.reason if current else None,
+                "pending_detail": current.detail if current else None,
                 "pending_count": len(self._pending_requests),
                 "pending_request_id": current.id if current else None,
                 "last_summary": self.last_summary,
@@ -264,6 +267,7 @@ class AgentWrapper:
             self.state.append_log(f"(read loop error: {e})")
             self.state.set_stopped("error", str(e))
         finally:
+            self._stop_flag.set()  # 定期チェックインスレッドも停止(ゾンビ承認防止)
             label = self.state.stop_reason_label()
             detail = self.state.snapshot().get("stop_reason_detail")
             self.notifier(
@@ -273,15 +277,17 @@ class AgentWrapper:
     def _handle_line(self, line: str) -> None:
         match = rules.check_destructive(line)
         if match.matched:
-            self.notifier("high", "削除系の操作を検知", match.reason)
-            self._wait_for_approval("destructive", match.reason)
+            classification = ollama_client.classify_destructive_match(line)
+            reason = f"{classification['headline']} / {match.reason}"
+            self.notifier("high", "削除系の操作を検知", reason)
+            self._wait_for_approval("destructive", reason, detail=line)
             return
 
         kind, content = rules.parse_agent_signal(line)
         if kind == "stop":
             reason = content or "エージェントが停止を要求"
             self.notifier("high", "エージェントが停止を要求", reason)
-            self._wait_for_approval("stop_request", reason)
+            self._wait_for_approval("stop_request", reason, detail=line)
         elif kind == "permission":
             judged = ollama_client.judge_permission(
                 content or "", model=self.ollama_model
@@ -292,11 +298,17 @@ class AgentWrapper:
             else:
                 reason = content or "権限確認"
                 self.notifier("medium", "権限確認(要判断)", reason)
-                self._wait_for_approval("permission_escalated", reason)
+                self._wait_for_approval("permission_escalated", reason, detail=line)
 
     def _checkin_loop(self) -> None:
         while not self._stop_flag.is_set():
-            time.sleep(self.checkin_interval_sec)
+            # エージェント終了時(_read_loopのfinallyで_stop_flagが立つ)に即座に
+            # 抜けられるよう、sleepではなくイベント待ちにする。終了後もチェックインが
+            # 承認待ちを生み続け、死んだプロセスへの承認(stdin書き込み失敗)を誘発する
+            # ゾンビ化バグが2026-07-11の実機で発生した
+            self._stop_flag.wait(timeout=self.checkin_interval_sec)
+            if self._stop_flag.is_set() or self.state.snapshot()["status"] == "stopped":
+                return
             recent = "\n".join(self.state.tail(50))
             if not recent.strip():
                 continue
@@ -306,9 +318,11 @@ class AgentWrapper:
 
             if ollama_client.judge_is_major_decision(recent, model=self.ollama_model):
                 self.notifier("medium", "方針決定っぽい相談を検知", summary)
-                self._wait_for_approval("major_decision", summary)
+                self._wait_for_approval("major_decision", summary, detail=recent)
 
-    def _wait_for_approval(self, kind: str, reason: str) -> HumanResponse:
+    def _wait_for_approval(
+        self, kind: str, reason: str, detail: str = ""
+    ) -> HumanResponse:
         event = threading.Event()
         response_holder: list[HumanResponse] = []
 
@@ -316,7 +330,7 @@ class AgentWrapper:
             response_holder.append(response)
             event.set()
 
-        self.state.set_waiting(kind, reason, on_response)
+        self.state.set_waiting(kind, reason, on_response, detail=detail)
         event.wait()
         return response_holder[0]
 

@@ -5,10 +5,48 @@
 - 「大きな方針決定っぽいか」の判定
 """
 
+import re
+
 import requests
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
 DEFAULT_MODEL = "gemma4:e4b"  # 手元の環境に合わせて config.yaml で上書きする想定
+
+_DESTRUCTIVE_TOKEN_RE = re.compile(
+    r"""(?ix)
+    \brm\s+-rf\b|
+    \bgit\s+reset\s+--hard\b|
+    \bgit\s+push\s+.*--force\b|
+    \bdrop\s+table\b|
+    \bdrop\s+database\b|
+    \bdel\s+/f\s+/s\s+/q\b|
+    \bformat\s+[a-zA-Z]:|
+    \btruncate\s+table\b|
+    >\s*/dev/sd[a-z]\b|
+    \bnpm\s+i(?:nstall)?\b|
+    \byarn\s+add\b|
+    \bpnpm\s+add\b|
+    \bpip3?\s+install\b|
+    \buv\s+add\b|
+    \buv\s+pip\s+install\b|
+    \bcargo\s+(?:install|add)\b|
+    \bgo\s+(?:install|get)\b|
+    \bgem\s+install\b|
+    \bbrew\s+install\b|
+    \bapt(?:-get)?\s+install\b|
+    \bchoco\s+install\b|
+    \bwinget\s+install\b|
+    \bgit\s+clone\b|
+    \bdocker\s+pull\b|
+    \bdocker\s+run\b
+    """
+)
+_WRITER_PREFIX_RE = re.compile(
+    r"""(?is)^\s*(?:echo|printf|cat|tee|write-output|set-content|add-content|out-file|@'|@")"""
+)
+_EMBEDDED_TEXT_HINT_RE = re.compile(
+    r"(?is)(?:write|save|append|set-content|out-file|tee|heredoc|here-string|ファイル)"
+)
 
 
 def _generate(model: str, prompt: str, timeout: int = 30) -> str:
@@ -73,6 +111,38 @@ def explain_operation(context: str, model: str = DEFAULT_MODEL) -> str:
         return _generate(model, prompt)
     except Exception as e:
         return f"(説明生成に失敗しました: {e})"
+
+
+def classify_destructive_match(context: str) -> dict[str, str]:
+    """
+    destructive検知文字列が「実行コマンドそのもの」か「本文データとして埋め込まれた
+    文字列」かを保守的に分類する。判断不能な場合は command_self に倒す。
+    """
+    match = _DESTRUCTIVE_TOKEN_RE.search(context)
+    if not match:
+        return {
+            "classification": "command_self",
+            "headline": "実行コマンド自体が破壊的",
+        }
+
+    prefix = context[: match.start()]
+    lowered = context.lower()
+    if (
+        _WRITER_PREFIX_RE.search(prefix) or _EMBEDDED_TEXT_HINT_RE.search(context)
+    ) and (
+        "'" in context
+        or '"' in context
+        or "set-content" in lowered
+        or "out-file" in lowered
+    ):
+        return {
+            "classification": "embedded_text",
+            "headline": "誤検知の可能性あり(コマンド本文中の文字列に一致)",
+        }
+    return {
+        "classification": "command_self",
+        "headline": "実行コマンド自体が破壊的",
+    }
 
 
 def judge_conversational_question(
