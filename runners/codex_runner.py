@@ -82,9 +82,22 @@ class CodexRunner(ApprovalRunnerBase):
     rules.py(検知ルール), ollama_client.py(一次判定/説明)。
     """
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
+    # OSサンドボックスの既定はdanger-full-access(サンドボックスなし)。
+    # 承認ゲート(approval-policy=untrustedによる全コマンドのelicitation承認)は
+    # この設定と無関係に常に有効で、これが一次防壁。サンドボックスは補助壁だが、
+    # Windowsでは読み取りすら誤ブロックする不安定さに加え、サンドボックス起因の
+    # 失敗を昇格で再実行する承認要求がmcp経由でクライアントに届かない上流バグ
+    # (openai/codex#21982系統)があり、2026-07-11の実運用で作業を複数回停止させた
+    # ため、人間の判断で既定オフとした(経緯: docs/agent_wrapper_permission_policy.md)。
+    # 信頼できないコードを扱う場合は--codex-sandbox workspace-writeを指定する。
+    DEFAULT_SANDBOX = "danger-full-access"
+
+    def __init__(
+        self, *args: Any, sandbox: str = DEFAULT_SANDBOX, **kwargs: Any
+    ) -> None:
         super().__init__(*args, **kwargs)
         self._thread_id: str | None = None
+        self.sandbox = sandbox
 
     async def _run_async(self) -> None:
         _install_codex_event_filter()
@@ -101,7 +114,7 @@ class CodexRunner(ApprovalRunnerBase):
                         "prompt": self.prompt,
                         "cwd": self.cwd,
                         "approval-policy": "untrusted",
-                        "sandbox": "workspace-write",
+                        "sandbox": self.sandbox,
                     },
                 )
                 self._capture_thread_id(result)

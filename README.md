@@ -115,6 +115,15 @@ agent-wrapper --agent codex --prompt "READMEを読んで要約して"
    承認待ち / 不一致→`judge_permission()` 一次判定→安全なら続行、そうでなければ人間の承認待ち
 3. 会話文での確認質問にも `judge_conversational_question()` で一次受付する(claude側と同じ)
 
+### OSサンドボックス(--codex-sandbox)
+
+既定は `danger-full-access`(サンドボックスなし)。**承認ゲート(全コマンドの実行前承認)は
+この設定と無関係に常に有効**で、これが一次防壁。サンドボックスは承認後の補助壁だが、
+Windowsでは読み取りすら誤ブロックする不安定さに加え、サンドボックス起因の失敗を
+昇格付きで再実行する承認要求がmcp経由で届かない上流バグ(openai/codex#21982系統)が
+あるため、既定オフとした(経緯と判断: docs/agent_wrapper_permission_policy.md 8節)。
+信頼できないコードを扱うタスクでは `--codex-sandbox workspace-write` を指定すること。
+
 注意: `codex exec`(非対話モード)は承認ポリシーを強制的に無効化するためこの用途には使えない
 (実機検証済み)。また、codexが送る独自通知(`codex/event`)がMCP SDKの型検証を通らず警告ログが
 出ることがあるが、動作には影響しない。詳細は `docs/agent_wrapper_sdk_integration_plan.md` 3.2節を参照。

@@ -58,6 +58,17 @@ def main() -> None:
         "--prompt-file",
         help="--agent claude/codex 使用時、--prompt の代わりにファイルから読む。",
     )
+    parser.add_argument(
+        "--codex-sandbox",
+        choices=["danger-full-access", "workspace-write", "read-only"],
+        default="danger-full-access",
+        help=(
+            "--agent codex のOSサンドボックス。既定はdanger-full-access(サンドボックスなし)。"
+            "承認ゲート(全コマンドのelicitation承認)はこの設定と無関係に常に有効。"
+            "既定の根拠はdocs/agent_wrapper_permission_policy.md参照。"
+            "信頼できないコードを扱う場合はworkspace-writeを指定する。"
+        ),
+    )
     args = parser.parse_args()
 
     if args.agent in RUNNER_CLASSES and not (args.prompt or args.prompt_file):
@@ -74,13 +85,23 @@ def main() -> None:
         if args.prompt_file:
             with open(args.prompt_file, encoding="utf-8") as f:
                 prompt = f.read()
-        agent = RUNNER_CLASSES[args.agent](
-            prompt=prompt,
-            cwd=os.getcwd(),
-            state=state,
-            ollama_model=args.ollama_model,
-            notifier=notify,
-        )
+        if args.agent == "codex":
+            agent = CodexRunner(
+                prompt=prompt,
+                cwd=os.getcwd(),
+                state=state,
+                ollama_model=args.ollama_model,
+                notifier=notify,
+                sandbox=args.codex_sandbox,
+            )
+        else:
+            agent = RUNNER_CLASSES[args.agent](
+                prompt=prompt,
+                cwd=os.getcwd(),
+                state=state,
+                ollama_model=args.ollama_model,
+                notifier=notify,
+            )
     else:
         agent = AgentWrapper(
             cmd=AGENT_COMMANDS[args.agent],
