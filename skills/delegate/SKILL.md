@@ -5,14 +5,14 @@ description: 承認ゲート付きAIラッパー(agent-wrapper)でタスクをcl
 
 # /delegate — agent-wrapperによるタスク委任
 
-このスキルは `agent-wrapper` リポジトリ(https://github.com/NewAITees/agent-wrapper)を
-利用する。他プロジェクトにこのスキルを配置する場合は、下記のパスをこのマシンに
-`agent-wrapper` をcloneした実際の場所に置き換えること。
+このスキルは単独リポジトリ化された `agent-wrapper`(https://github.com/NewAITees/agent-wrapper)を利用する。
+2026-07-12にplay_groundから切り出した。play_ground側にも当面コピーが残っているが、
+`agent-wrapper`コマンドの実体はこちらの新リポジトリに切り替え済み。
 
 参照:
-- 設計意図: `<agent-wrapperリポジトリのパス>/docs/agent_wrapper_usage_workflow.md`
-- 操作詳細: `<agent-wrapperリポジトリのパス>/README.md`
-- 許可設計: `<agent-wrapperリポジトリのパス>/docs/agent_wrapper_permission_policy.md`
+- 設計意図: Windows `C:\analysis2\agent-wrapper\docs\agent_wrapper_usage_workflow.md` / WSL `/mnt/c/analysis2/agent-wrapper/docs/agent_wrapper_usage_workflow.md`
+- 操作詳細: Windows `C:\analysis2\agent-wrapper\README.md` / WSL `/mnt/c/analysis2/agent-wrapper/README.md`
+- 許可設計: Windows `C:\analysis2\agent-wrapper\docs\agent_wrapper_permission_policy.md` / WSL `/mnt/c/analysis2/agent-wrapper/docs/agent_wrapper_permission_policy.md`
 
 ## 位置づけ(最重要)
 
@@ -22,9 +22,8 @@ agent-wrapperは「仕様が固まった作業を安全に外出しする実行�
 
 ## 前提チェック
 
-1. `agent-wrapper --help` が通ること(`uv tool install -e .` でPATH登録済みの前提。
-   未登録なら `<agent-wrapperリポジトリのパス>/.venv/Scripts/agent-wrapper.exe --help`)
-2. Ollama APIが応答し、使用モデルがpull済みであること(不可ならすべて人間エスカレーションになる)
+1. `agent-wrapper --help` が通ること(`uv tool install -e .` でPATH登録済みの前提。未登録なら `C:\analysis2\agent-wrapper\.venv\Scripts\agent-wrapper.exe --help`、WSLでは `/mnt/c/analysis2/agent-wrapper/.venv/Scripts/agent-wrapper.exe`)
+2. Ollama API `http://127.0.0.1:11436` が応答し、`gemma4:e4b` がpull済みであること(不可ならすべて人間エスカレーションになる)
 3. 対象ディレクトリがgit管理下で、作業ツリーが意図した状態であること(`git status`)
 4. ポート28765が空いていること(残存リスナーがあれば停止を提案)
 
@@ -59,22 +58,21 @@ Start-Process -FilePath "<対象または実行環境のpython/agent-wrapper>" `
 ```
 
 - `--agent claude`(claude-agent-sdk/Claudeサブスク)か `--agent codex`(codex mcp-server/ChatGPTサブスク)を選ぶ
-- **`--codex-sandbox` は指定しない**(既定=danger-full-accessは意図的な設計判断)。
+- **`--codex-sandbox` は指定しない**(既定=danger-full-accessは意図的な設計判断・2026-07-11ユーザー決定)。
   安全側に見えても `workspace-write` を足してはならない: mcp経由では権限昇格の承認が
   クライアントに届かない上流バグ(openai/codex#21982系統)があり、人間がダッシュボードで
-  承認しても実行基盤に拒否されて作業が停止する(実運用で発生実績あり)。
+  承認しても実行基盤に拒否されて作業が停止する(2026-07-12に実運用で発生)。
   承認ゲート(全コマンドのelicitation承認)はサンドボックス設定と無関係に常時有効。
-  理由詳細: `docs/agent_wrapper_permission_policy.md` §8。指定するのはユーザーが明示的に
+  理由詳細: docs/agent_wrapper_permission_policy.md §8。指定するのはユーザーが明示的に
   「信頼できないコードを扱うのでサンドボックスを付けて」と指示した場合のみ
 - **ラッパー自身のコード(agent-wrapperリポジトリ)を改修させる場合**は、実行中プロセスが
-  編集途中の壊れたコードを踏まないよう、安定コミットのgit worktreeからコードを読む
-  ランチャー方式にする(sys.path先頭に安定worktreeを挿入し、cwdだけ対象に向ける。
-  agent-wrapperリポジトリの.venvのpythonで実行)
+  編集途中の壊れたコードを踏まないよう、安定コミットのgit worktreeからコードを読むランチャー方式にする
+  (sys.path先頭に安定worktreeを挿入し、cwdだけ対象に向ける。agent-wrapperリポジトリの.venvのpythonで実行)
 - 起動後、ポート28765のLISTENを確認する
 
-### 3. 監視はしない(トークン節約方針)
+### 3. 監視はしない(トークン節約方針・2026-07-11ユーザー指示)
 
-**監視サブエージェントは起動しない。** 監視1回あたり多くのトークンを消費する一方、
+**監視サブエージェントは起動しない。** 監視1回あたりClaudeトークンを5〜7万消費する一方、
 その成果物はダッシュボードでユーザーが見ている情報とほぼ重複するため費用対効果が低い。
 
 - ラッパーはデタッチ独立プロセスなので、監視なしでも安全に動く
