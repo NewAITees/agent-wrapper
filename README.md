@@ -7,7 +7,7 @@ Claude CodeやCodexをサブプロセスとして起動し、ollamaによる一�
 どのプロジェクトのVSCodeターミナルからでも `agent-wrapper` コマンドで起動できるように、uvのtool機能でPATHに登録する。
 
 ```bash
-cd C:\analysis2\play_ground
+cd <このリポジトリのパス>
 uv tool install -e .
 ```
 
