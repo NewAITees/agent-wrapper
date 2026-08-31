@@ -141,3 +141,13 @@ play_groundのtasks/lessons.mdからagent_wrapper関連エントリを転記し�
 - **対策**: 他ハーネス/他モデルへ実装を委譲したときは、報告内容を鵜呑みにせず必ず`git diff`や対象ファイルの実際の中身を見て検証する。うまくいかなければ`opencode run -m <明示的な強いモデル>`のように、委譲先のデフォルト(弱い可能性がある)に任せず明示的にモデルを指定して再依頼する。今回は`-m openai/gpt-5.6-terra-fast`を明示指定したところ意図通りの変更(トークン設計・ライト/ダーク両対応・API契約維持)が実際に適用された。
 - **補足**: `opencode run`は非対話のはずでも、モデルが会話文で「この計画でよければyと返信してください」のように尋ねてくることがあり、その場合は一度で完了せずプロセスが承認待ちのまま終了する。`opencode run -c "y"`(直前セッションを継続)で応答すれば続行できる。
 
+## 2026-09-01 Approval Broker中央応答とセッション別表示状態
+- **症状**: Broker APIから直接要求を解決すると、runnerの待機callbackは解除されても、セッション側の`SharedState.status`が`waiting_human`のまま残りうる。
+- **原因**: 従来は`SharedState.respond()`だけがキュー解除後の表示状態を更新していたが、中央Broker導入後はserverからBrokerへ直接応答する経路が増えた。
+- **対策**: Broker登録時の要求別callbackで既存runnerへの応答とSharedStateの状態更新を両方行う。期限切れはcallbackを伴わないため、`snapshot()`でもpendingを再評価してstaleな待機表示を解消する。中央台帳とセッション別projectionの両方をテストする。
+
+## 2026-09-01 HTML hidden属性とCSS display指定の競合
+- **症状**: セットアップフォームへ`hidden`属性を付けても、独自クラスの`display: grid`が優先され、実行画面の上に空白領域が残った。
+- **原因**: ブラウザ標準の`[hidden]`表示規則より、後から定義したクラスセレクタの`display`指定がカスケード上で優先された。
+- **対策**: 動的に表示を切り替える画面では`[hidden] { display: none !important; }`を共通規則として明示し、pytestだけでなく実ブラウザのスクリーンショットで空白・重なりを確認する。
+

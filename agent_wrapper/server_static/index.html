@@ -51,6 +51,7 @@
     }
 
     * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
     body {
       min-width: 320px;
       margin: 0;
@@ -78,9 +79,7 @@
     .path-box { min-height: 69px; padding: 10px 11px; margin-bottom: 10px; overflow-wrap: anywhere; background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 6px; color: var(--muted); font-family: "IBM Plex Mono", monospace; font-size: .75rem; line-height: 1.45; }
     .path-box.is-selected { color: var(--ink); }
     .recent-folders { display: grid; gap: 5px; margin-top: 14px; }
-    .recent-folders-title { margin: 0; color: var(--muted); font-family: "IBM Plex Mono", monospace; font-size: .65rem; letter-spacing: .03em; text-transform: uppercase; }
-    .recent-folder-btn { width: 100%; padding: 7px 8px; overflow-wrap: anywhere; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--ink); font-family: "IBM Plex Mono", monospace; font-size: .7rem; text-align: left; }
-    .recent-folder-btn:hover { border-color: var(--accent); background: var(--accent-soft); }
+    .recent-folders-title { display: block; margin: 0 0 5px; color: var(--muted); font-family: "IBM Plex Mono", monospace; font-size: .65rem; letter-spacing: .03em; text-transform: uppercase; }
 
     .button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 34px; padding: 7px 11px; border: 1px solid transparent; border-radius: 6px; background: var(--accent); color: white; font-size: .82rem; font-weight: 500; }
     .button:hover:not(:disabled) { background: var(--accent-strong); }
@@ -108,11 +107,51 @@
     #status { min-height: 20px; margin: 10px 0 0; color: var(--muted); font-size: .8rem; text-align: right; }
     #status.error { color: var(--danger); }
 
-    #terminal-view { display: none; height: 100vh; background: var(--terminal); }
+    #terminal-view { display: none; height: 100vh; overflow: hidden; background: var(--terminal); }
+    .runtime-shell { display: grid; grid-template-columns: minmax(320px, 370px) minmax(0, 1fr); height: 100vh; }
+    #approval-rail { position: relative; z-index: 2; display: flex; min-width: 0; min-height: 0; flex-direction: column; overflow: auto; border-right: 1px solid var(--line); background: var(--surface); color: var(--ink); box-shadow: 12px 0 34px rgb(0 0 0 / 14%); }
+    .approval-header { padding: 22px 22px 17px; border-bottom: 1px solid var(--line); }
+    .approval-eyebrow { margin: 0 0 8px; color: var(--accent); font-family: "IBM Plex Mono", monospace; font-size: .65rem; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; }
+    .approval-title-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .approval-title { margin: 0; font-size: 1.08rem; letter-spacing: -.02em; }
+    .approval-count { display: inline-flex; min-width: 27px; height: 27px; align-items: center; justify-content: center; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-family: "IBM Plex Mono", monospace; font-size: .72rem; font-weight: 600; }
+    .approval-intro { margin: 8px 0 0; color: var(--muted); font-size: .78rem; line-height: 1.55; }
+    .approval-flow { display: grid; padding: 18px 22px 8px; }
+    .flow-step { position: relative; display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 10px; min-height: 58px; }
+    .flow-step:not(:last-child)::after { position: absolute; top: 27px; bottom: 0; left: 13px; width: 1px; background: var(--line-strong); content: ""; }
+    .flow-index { position: relative; z-index: 1; display: flex; width: 27px; height: 27px; align-items: center; justify-content: center; border: 1px solid var(--line-strong); border-radius: 999px; background: var(--surface); color: var(--muted); font-family: "IBM Plex Mono", monospace; font-size: .66rem; }
+    .flow-step.is-active .flow-index { border-color: var(--accent); background: var(--accent); color: white; box-shadow: 0 0 0 4px var(--accent-soft); }
+    .flow-copy strong { display: block; margin-top: 2px; font-size: .78rem; }
+    .flow-copy span { display: block; margin-top: 3px; color: var(--muted); font-size: .7rem; line-height: 1.4; }
+    .approval-panel { display: grid; gap: 13px; margin: 8px 14px 14px; padding: 17px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-subtle); }
+    .approval-empty { padding: 15px; border: 1px dashed var(--line-strong); border-radius: 8px; color: var(--muted); font-size: .77rem; line-height: 1.55; text-align: center; }
+    .approval-request { display: grid; gap: 11px; }
+    .request-topline { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .request-kind { padding: 3px 7px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-family: "IBM Plex Mono", monospace; font-size: .62rem; font-weight: 600; text-transform: uppercase; }
+    .request-session { overflow: hidden; color: var(--muted); font-family: "IBM Plex Mono", monospace; font-size: .67rem; text-overflow: ellipsis; white-space: nowrap; }
+    .request-reason { margin: 0; font-size: .86rem; font-weight: 600; line-height: 1.45; }
+    .request-resource { max-height: 145px; margin: 0; padding: 10px; overflow: auto; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--ink); font-family: "IBM Plex Mono", monospace; font-size: .69rem; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+    .request-facts { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .request-fact { padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+    .request-fact small { display: block; color: var(--muted); font-size: .6rem; text-transform: uppercase; }
+    .request-fact span { display: block; margin-top: 3px; font-family: "IBM Plex Mono", monospace; font-size: .68rem; }
+    #approval-message { width: 100%; min-height: 68px; resize: vertical; padding: 9px 10px; outline: none; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface); color: var(--ink); font: .76rem/1.45 "IBM Plex Sans", sans-serif; }
+    #approval-message:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+    .approval-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+    .approval-actions .button { min-height: 36px; }
+    .approval-actions .approve-action { grid-column: 1 / -1; background: #237a4b; }
+    .approval-actions .approve-action:hover:not(:disabled) { background: #19653c; }
+    .approval-actions .deny-action { border-color: color-mix(in srgb, var(--danger) 48%, var(--line)); color: var(--danger); }
+    .approval-status { min-height: 18px; margin: 0; color: var(--muted); font-size: .7rem; line-height: 1.4; }
+    #terminal-workspace { min-width: 0; min-height: 0; background: var(--terminal); }
     .terminal-topbar { display: flex; align-items: center; min-height: 42px; padding: 0 13px; border-bottom: 1px solid var(--terminal-line); background: var(--terminal-bar); color: var(--terminal-ink); }
     .terminal-topbar strong { font-size: .84rem; letter-spacing: .01em; }
     .terminal-topbar span { margin-left: 9px; color: #9caabe; font-family: "IBM Plex Mono", monospace; font-size: .69rem; }
-    .terminal-grid { display: grid; height: calc(100vh - 42px); grid-template-columns: repeat(var(--pane-count), minmax(0, 1fr)); }
+    .terminal-layout { display: grid; height: calc(100vh - 42px); grid-template-rows: minmax(220px, 35%) minmax(0, 65%); overflow: hidden; }
+    .orchestrator-stage { display: grid; min-width: 0; min-height: 0; border-bottom: 2px solid #3c506c; }
+    .orchestrator-stage .pane-header { background: #1c2735; }
+    .orchestrator-stage .pane-name::before { display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 999px; background: #78a8ff; box-shadow: 0 0 0 3px rgb(120 168 255 / 14%); content: ""; vertical-align: 1px; }
+    .role-terminal-grid { display: grid; min-width: 0; min-height: 0; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(var(--role-rows), minmax(0, 1fr)); overflow: hidden; }
     .pane { display: flex; min-width: 0; min-height: 0; flex-direction: column; border-right: 1px solid var(--terminal-line); border-bottom: 1px solid var(--terminal-line); }
     .pane-header { display: flex; align-items: center; min-height: 38px; padding: 6px 10px; gap: 9px; background: var(--terminal-bar); color: var(--terminal-ink); }
     .pane-name { font-family: "IBM Plex Mono", monospace; font-size: .8rem; font-weight: 500; white-space: nowrap; }
@@ -128,7 +167,11 @@
       .terminal-row { grid-template-columns: 1fr 1fr; padding: 12px; }
       .terminal-row .field:nth-child(3), .terminal-row .field:nth-child(4) { grid-column: span 1; }
       .remove-row-btn { grid-column: 2; justify-self: end; margin-top: -2px; }
-      .terminal-grid { grid-template-columns: 1fr; height: auto; min-height: calc(100vh - 42px); }
+      .runtime-shell { grid-template-columns: 1fr; height: auto; }
+      #approval-rail { max-height: none; border-right: 0; border-bottom: 1px solid var(--line); box-shadow: 0 10px 30px rgb(0 0 0 / 18%); }
+      #terminal-workspace { min-height: 60vh; }
+      .terminal-layout { height: auto; grid-template-rows: none; overflow: visible; }
+      .orchestrator-stage, .role-terminal-grid { display: grid; grid-template-columns: 1fr; grid-template-rows: none; overflow: visible; }
       #terminal-view { height: auto; min-height: 100vh; }
       .pane { height: max(380px, calc((100vh - 42px) / var(--pane-count))); }
     }
@@ -151,7 +194,10 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h6l2 2h10v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
           フォルダを選択
         </button>
-        <div id="recent-folders" class="recent-folders" hidden></div>
+        <div id="recent-folders" class="recent-folders" hidden>
+          <label for="recent-folders-select" class="recent-folders-title">最近使ったフォルダ</label>
+          <select id="recent-folders-select"><option value="" disabled selected>選択してください</option></select>
+        </div>
       </section>
 
       <section class="card terminals-card" aria-labelledby="terminals-title">
@@ -171,11 +217,53 @@
   </main>
 
   <main id="terminal-view">
-    <div class="terminal-topbar"><strong>agent-wrapper</strong><span id="session-count"></span></div>
-    <div class="terminal-grid" id="grid"></div>
+    <div class="runtime-shell">
+      <aside id="approval-rail" aria-label="人間による承認フロー">
+        <header class="approval-header">
+          <p class="approval-eyebrow">Human checkpoint</p>
+          <div class="approval-title-row">
+            <h2 class="approval-title">人間の判断</h2>
+            <span class="approval-count" id="approval-count">0</span>
+          </div>
+          <p class="approval-intro">AIが一次受付した要求のうち、人間にしか決められない操作をここで確認します。</p>
+        </header>
+        <div class="approval-flow" id="approval-flow">
+          <div class="flow-step"><span class="flow-index">1</span><div class="flow-copy"><strong>エージェントが要求</strong><span>操作・仕様質問を構造化して送信</span></div></div>
+          <div class="flow-step"><span class="flow-index">2</span><div class="flow-copy"><strong>ルールとAIが一次受付</strong><span>安全な範囲だけ自動処理し、曖昧なら停止</span></div></div>
+          <div class="flow-step" id="human-flow-step"><span class="flow-index">3</span><div class="flow-copy"><strong>人間が最終判断</strong><span>承認・説明要求・却下を選択</span></div></div>
+        </div>
+        <section class="approval-panel" aria-live="polite">
+          <div class="approval-empty" id="approval-empty">現在、人間の判断を待っている要求はありません。<br>ターミナルはそのまま監視できます。</div>
+          <article class="approval-request" id="approval-request" hidden>
+            <div class="request-topline"><span class="request-kind" id="request-kind"></span><span class="request-session" id="request-session"></span></div>
+            <p class="request-reason" id="request-reason"></p>
+            <pre class="request-resource" id="request-resource"></pre>
+            <div class="request-facts">
+              <div class="request-fact"><small>Action</small><span id="request-action"></span></div>
+              <div class="request-fact"><small>Risk</small><span id="request-risk"></span></div>
+            </div>
+            <textarea id="approval-message" placeholder="条件、確認したい点、却下理由（任意）"></textarea>
+            <div class="approval-actions">
+              <button class="button approve-action" type="button" data-approval-action="approve">承認して続行</button>
+              <button class="button secondary" type="button" data-approval-action="explain">説明を求める</button>
+              <button class="button secondary deny-action" type="button" data-approval-action="deny">却下する</button>
+            </div>
+          </article>
+          <p class="approval-status" id="approval-status"></p>
+        </section>
+      </aside>
+      <section id="terminal-workspace" aria-label="エージェントターミナル">
+        <div class="terminal-topbar"><strong>agent-wrapper</strong><span id="session-count"></span></div>
+        <div class="terminal-layout" id="terminal-layout">
+          <div class="orchestrator-stage" id="orchestrator-stage" aria-label="オーケストレーター"></div>
+          <div class="role-terminal-grid" id="role-terminal-grid" aria-label="実行担当エージェント"></div>
+        </div>
+      </section>
+    </div>
   </main>
 
   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
   <script>
     const HARNESSES = ["claude", "codex", "opencode"];
     const DEFAULT_ROWS = [
@@ -191,7 +279,62 @@
     const startBtn = document.getElementById("start-btn");
     const statusEl = document.getElementById("status");
     const recentFoldersEl = document.getElementById("recent-folders");
+    const approvalRequestEl = document.getElementById("approval-request");
+    const approvalEmptyEl = document.getElementById("approval-empty");
+    const approvalStatusEl = document.getElementById("approval-status");
+    let currentApproval = null;
     let selectedFolder = null;
+
+    function renderApproval(requests) {
+      const pending = Array.isArray(requests) ? requests : [];
+      currentApproval = pending[0] || null;
+      document.getElementById("approval-count").textContent = String(pending.length);
+      document.getElementById("human-flow-step").classList.toggle("is-active", Boolean(currentApproval));
+      approvalEmptyEl.hidden = Boolean(currentApproval);
+      approvalRequestEl.hidden = !currentApproval;
+      if (!currentApproval) return;
+      document.getElementById("request-kind").textContent = currentApproval.kind === "specification_question" ? "仕様判断" : "操作権限";
+      document.getElementById("request-session").textContent = `${currentApproval.session_id} · ${currentApproval.harness}`;
+      document.getElementById("request-reason").textContent = currentApproval.reason || "判断が必要です";
+      document.getElementById("request-resource").textContent = currentApproval.resource || "詳細情報なし";
+      document.getElementById("request-action").textContent = currentApproval.action || "-";
+      document.getElementById("request-risk").textContent = currentApproval.risk_level || "要確認";
+    }
+
+    async function refreshApprovals() {
+      try {
+        const response = await fetch("/approvals");
+        if (!response.ok) throw new Error("承認一覧を取得できませんでした");
+        const data = await response.json();
+        renderApproval(data.requests);
+        approvalStatusEl.textContent = "";
+      } catch (error) {
+        approvalStatusEl.textContent = error.message;
+      }
+    }
+
+    async function respondToApproval(action) {
+      if (!currentApproval) return;
+      const request = currentApproval;
+      const message = document.getElementById("approval-message").value.trim();
+      approvalStatusEl.textContent = "応答を送信しています...";
+      const response = await fetch("/approvals/" + encodeURIComponent(request.request_id) + "/respond", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: request.session_id, action, message }),
+      });
+      if (!response.ok) {
+        approvalStatusEl.textContent = "要求が更新済み、期限切れ、または応答できませんでした。";
+        return refreshApprovals();
+      }
+      document.getElementById("approval-message").value = "";
+      approvalStatusEl.textContent = action === "approve" ? "承認しました。" : action === "explain" ? "説明を依頼しました。" : "却下しました。";
+      await refreshApprovals();
+    }
+
+    document.querySelectorAll("[data-approval-action]").forEach((button) => {
+      button.addEventListener("click", () => respondToApproval(button.dataset.approvalAction));
+    });
 
     function setStatus(message, isError = false) {
       statusEl.textContent = message;
@@ -213,15 +356,9 @@
         const data = await response.json();
         const folders = Array.isArray(data.folders) ? data.folders.filter((path) => typeof path === "string" && path) : [];
         if (!folders.length) return;
-        recentFoldersEl.append(Object.assign(document.createElement("p"), { className: "recent-folders-title", textContent: "最近使ったフォルダ" }));
-        folders.forEach((path) => {
-          const button = document.createElement("button");
-          button.className = "recent-folder-btn";
-          button.type = "button";
-          button.textContent = path;
-          button.onclick = () => selectFolder(path);
-          recentFoldersEl.append(button);
-        });
+        const select = document.getElementById("recent-folders-select");
+        folders.forEach((path) => select.add(new Option(path, path)));
+        select.onchange = () => selectFolder(select.value);
         recentFoldersEl.hidden = false;
       } catch (_) { /* Recent folders are optional. */ }
     }
@@ -347,13 +484,19 @@
       document.getElementById("setup-view").style.display = "none";
       document.getElementById("terminal-view").style.display = "block";
       document.getElementById("session-count").textContent = `${names.length} ACTIVE SESSION${names.length === 1 ? "" : "S"}`;
-      const grid = document.getElementById("grid");
-      grid.style.setProperty("--pane-count", names.length);
+      const orchestratorStage = document.getElementById("orchestrator-stage");
+      const roleGrid = document.getElementById("role-terminal-grid");
+      orchestratorStage.replaceChildren();
+      roleGrid.replaceChildren();
+      const orchestratorName = names.find((name) => name.toLowerCase() === "orchestrator") || names[0];
+      const roleCount = Math.max(0, names.length - 1);
+      roleGrid.style.setProperty("--role-rows", Math.max(1, Math.ceil(roleCount / 2)));
       const configByName = new Map(configurations.map((config) => [config.name, config]));
       names.forEach((name) => {
         const config = configByName.get(name) || {};
         const pane = document.createElement("section");
-        pane.className = "pane";
+        const isOrchestrator = name.toLowerCase() === "orchestrator" || name === orchestratorName;
+        pane.className = isOrchestrator ? "pane orchestrator-pane" : "pane role-pane";
         const header = document.createElement("header");
         header.className = "pane-header";
         const nameEl = document.createElement("span");
@@ -369,9 +512,13 @@
         termEl.className = "term";
         header.append(nameEl, badge, meta);
         pane.append(header, termEl);
-        grid.append(pane);
+        (isOrchestrator ? orchestratorStage : roleGrid).append(pane);
         const term = new Terminal({ convertEol: true, cursorBlink: true, fontFamily: "IBM Plex Mono, monospace", fontSize: 13, theme: { background: "#0c1016", foreground: "#e8edf5" } });
+        const fitAddon = new FitAddon.FitAddon();
+        term.loadAddon(fitAddon);
         term.open(termEl);
+        requestAnimationFrame(() => fitAddon.fit());
+        new ResizeObserver(() => fitAddon.fit()).observe(termEl);
         const ws = new WebSocket("ws://127.0.0.1:8766/" + name);
         ws.onmessage = (event) => term.write(event.data);
         ws.onclose = () => term.write("\r\n[接続が切断されました]\r\n");
@@ -382,6 +529,8 @@
 
     DEFAULT_ROWS.forEach(addRow);
     fetchRecentFolders();
+    refreshApprovals();
+    setInterval(refreshApprovals, 2500);
     fetch("/sessions").then((response) => response.json()).then((data) => {
       if (!data.names?.length) return;
       let configurations = [];

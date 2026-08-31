@@ -16,10 +16,17 @@ import re
 import subprocess
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from . import ollama_client, qr_display, rules
+from .approval import (
+    ApprovalBroker,
+    ApprovalDecision,
+    ApprovalKind,
+    ApprovalRequest,
+    ApprovalRequestInput,
+)
 
 Notifier = Callable[[str, str, str], None]
 HumanAction = Literal["approve", "explain", "deny"]
@@ -90,25 +97,17 @@ class HumanResponse:
         return "却下"
 
 
-@dataclass(slots=True)
-class ApprovalRequest:
-    id: int
-    kind: str
-    reason: str
-    created_at: str
-    detail: str = ""
-    callback: ApprovalCallback = field(repr=False, default=lambda response: None)
-    response: HumanResponse | None = None
-
-    def resolve(self, response: HumanResponse) -> None:
-        self.response = response
-        self.callback(response)
-
-
 class SharedState:
     """dashboard.py と wrapper.py の間で共有する状態。スレッドセーフにするためlockを持つ。"""
 
-    def __init__(self, log_maxlen: int = 2000) -> None:
+    def __init__(
+        self,
+        log_maxlen: int = 2000,
+        *,
+        broker: ApprovalBroker | None = None,
+        session_id: str | None = None,
+        harness: str = "unknown",
+    ) -> None:
         self.lock = threading.Lock()
         self.log: collections.deque[str] = collections.deque(maxlen=log_maxlen)
         self.status = "starting"  # starting | running | waiting_human | stopped
@@ -120,8 +119,9 @@ class SharedState:
         self.qr_code_data_url: str | None = None
         self.approved_plan: str | None = None
         self.process: subprocess.Popen[str] | None = None
-        self._pending_requests: collections.deque[ApprovalRequest] = collections.deque()
-        self._next_request_id = 1
+        self.broker = broker or ApprovalBroker()
+        self.session_id = session_id or f"session-{id(self):x}"
+        self.harness = harness
 
     def append_log(self, line: str) -> None:
         with self.lock:
@@ -142,24 +142,42 @@ class SharedState:
         callback: ApprovalCallback | None = None,
         detail: str = "",
     ) -> ApprovalRequest:
-        created_at = datetime.datetime.now().strftime("%H:%M:%S")
-        with self.lock:
-            request = ApprovalRequest(
-                id=self._next_request_id,
-                kind=kind,
+        approval_kind: ApprovalKind = (
+            "specification_question"
+            if kind
+            in {"plan_approval", "conversational_escalated", "conversation_limit"}
+            else "permission"
+        )
+
+        def on_decision(decision: ApprovalDecision) -> None:
+            if callback is not None:
+                callback(HumanResponse(decision.action, decision.message))
+            pending = self.broker.pending(self.session_id)
+            with self.lock:
+                if self.status != "stopped":
+                    self.status = "waiting_human" if pending else "running"
+
+        request = self.broker.submit(
+            ApprovalRequestInput(
+                session_id=self.session_id,
+                harness=self.harness,
+                kind=approval_kind,
+                action=kind,
+                resource=detail,
                 reason=reason,
-                created_at=created_at,
-                detail=detail,
-                callback=callback or (lambda response: None),
-            )
-            self._next_request_id += 1
-            self._pending_requests.append(request)
+                plan_id=self.approved_plan,
+                metadata={"legacy_kind": kind},
+            ),
+            callback=on_decision,
+        )
+        with self.lock:
             self.status = "waiting_human"
         return request
 
     def set_running(self) -> None:
+        pending = self.broker.pending(self.session_id)
         with self.lock:
-            if not self._pending_requests:
+            if not pending:
                 self.status = "running"
             self.stop_reason = "running"
             self.stop_reason_detail = None
@@ -181,42 +199,50 @@ class SharedState:
     def respond(
         self,
         response: HumanResponse,
-        request_id: int | None = None,
+        request_id: str | int | None = None,
     ) -> ApprovalRequest | None:
+        pending = self.broker.pending(self.session_id)
+        if not pending:
+            return None
+        current = pending[0]
+        if request_id is not None and current.request_id != str(request_id):
+            return None
+        resolved = self.broker.respond(
+            self.session_id,
+            current.request_id,
+            ApprovalDecision(response.action, response.message),
+        )
+        remaining = self.broker.pending(self.session_id)
         with self.lock:
-            if not self._pending_requests:
-                return None
-            current = self._pending_requests[0]
-            if request_id is not None and current.id != request_id:
-                return None
-            request = self._pending_requests.popleft()
-            request.response = response
-            if self.status != "stopped":
-                self.status = "waiting_human" if self._pending_requests else "running"
-        request.resolve(response)
-        return request
+            if resolved is not None and self.status != "stopped":
+                self.status = "waiting_human" if remaining else "running"
+        return resolved
 
     def set_stopped(self, reason: StopReason, detail: str | None = None) -> None:
         with self.lock:
             self.status = "stopped"
-            self._pending_requests.clear()
             self.stop_reason = reason
             self.stop_reason_detail = detail
+        self.broker.cancel_session(self.session_id)
 
     def stop_reason_label(self) -> str:
         with self.lock:
             return _STOP_REASON_LABELS[self.stop_reason]
 
     def snapshot(self) -> dict[str, Any]:
+        pending = self.broker.pending(self.session_id)
         with self.lock:
-            current = self._pending_requests[0] if self._pending_requests else None
+            if self.status == "waiting_human" and not pending:
+                self.status = "running"
+            current = pending[0] if pending else None
             return {
                 "status": self.status,
-                "pending_kind": current.kind if current else None,
+                "pending_kind": current.action if current else None,
+                "pending_request_kind": current.kind if current else None,
                 "pending_reason": current.reason if current else None,
-                "pending_detail": current.detail if current else None,
-                "pending_count": len(self._pending_requests),
-                "pending_request_id": current.id if current else None,
+                "pending_detail": current.resource if current else None,
+                "pending_count": len(pending),
+                "pending_request_id": current.request_id if current else None,
                 "last_summary": self.last_summary,
                 "last_summary_time": self.last_summary_time,
                 "stop_reason": self.stop_reason,
@@ -407,7 +433,7 @@ class AgentWrapper:
         self,
         action: HumanAction,
         message: str = "",
-        request_id: int | None = None,
+        request_id: str | int | None = None,
     ) -> None:
         response = HumanResponse(action=action, message=message.strip())
         resolved = self.state.respond(response, request_id=request_id)

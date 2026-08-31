@@ -19,7 +19,7 @@ class Approvable(Protocol):
         self,
         action: HumanAction,
         message: str = "",
-        request_id: int | None = None,
+        request_id: str | int | None = None,
     ) -> None: ...
 
 
@@ -470,7 +470,7 @@ def make_app(agent_wrapper: Approvable, state: SharedState) -> Flask:
             action = "approve"
         message = str(payload.get("message", ""))
         raw_request_id = payload.get("request_id")
-        request_id = raw_request_id if isinstance(raw_request_id, int) else None
+        request_id = raw_request_id if isinstance(raw_request_id, (str, int)) else None
         agent_wrapper.respond(action, message, request_id=request_id)
         return jsonify({"ok": True})
 

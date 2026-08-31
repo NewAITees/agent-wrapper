@@ -31,6 +31,7 @@ import asyncio
 import http.server
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -44,6 +45,9 @@ import requests
 import websockets
 import winpty
 from websockets.asyncio.server import serve
+
+from .approval import ApprovalBroker, ApprovalDecision
+from .wrapper import SharedState
 
 HTTP_PORT = 8765
 WS_PORT = 8766
@@ -61,6 +65,99 @@ _STATIC_MODELS: dict[str, dict[str, list[str]]] = {
 }
 
 _STATIC_PAGE_PATH = Path(__file__).parent / "server_static" / "index.html"
+
+# ターミナルの名前(role)に応じて、既定のシステムプロンプトを完全に置き換える形で
+# 差し込む(2026-09-01、ユーザー指示: 「名称に沿ったシステムプロンプトを挿入し、
+# 既存のシステムプロンプトは挿入しない」)。claude/opencodeは置き換え手段が実在するが、
+# codexはCLIに置き換え手段が見当たらないため対象外(tasks/todo.md参照)。
+ROLE_SYSTEM_PROMPTS: dict[str, str] = {
+    "orchestrator": (
+        "あなたはこのマルチセッション作業におけるorchestratorです。"
+        "各セッション(planner/worker/reviewer等)からの許可依頼・質問を一次的に受け止め、"
+        "内容を人間が判断しやすい形に整理してください。"
+        "あなた自身が最終的な実行許可を与えることはありません。"
+        "また、各セッションへの作業の割り振り・進行管理を担当してください。"
+    ),
+    "planner": (
+        "あなたはこのマルチセッション作業におけるplannerです。"
+        "要求を分析し、実装に入る前に具体的な計画(目的・方針・変更範囲・影響・検証方法)を"
+        "まとめることに専念してください。自分でコードを実装することはせず、"
+        "計画をworker等の他セッションに引き継ぐ前提で作業してください。"
+    ),
+    "worker": (
+        "あなたはこのマルチセッション作業におけるworkerです。"
+        "与えられた計画・指示に従って実装作業を行うことに専念してください。"
+        "計画そのものの妥当性に大きな疑問がある場合は、実装を進める前にその旨を明確に述べてください。"
+    ),
+    "reviewer": (
+        "あなたはこのマルチセッション作業におけるreviewerです。"
+        "他セッションが行った実装の正しさ・簡潔さ・安全性をレビューすることに専念してください。"
+        "自分で新規に大きな実装を行うのではなく、指摘事項を具体的に述べてください。"
+    ),
+    "tester": (
+        "あなたはこのマルチセッション作業におけるtesterです。"
+        "実装に対するテストの作成・実行・結果の報告に専念してください。"
+    ),
+    "utility": (
+        "あなたはこのマルチセッション作業におけるutilityです。"
+        "他セッションからの軽量な下請け作業(要約、内容の一次判定、簡単な確認作業など)を"
+        "担当してください。大きな設計判断や最終的な許可判断は行わず、"
+        "材料を整理して返すことに専念してください。"
+    ),
+}
+
+
+def system_prompt_for(name: str) -> str:
+    """ターミナルの名前(role)に対応するシステムプロンプトを返す。
+
+    既知の役割名(ROLE_SYSTEM_PROMPTS)以外の任意の名前にも、その名前を役割として
+    扱う汎用プロンプトを生成する(常に何らかのカスタムプロンプトを持たせる設計)。
+    """
+    preset = ROLE_SYSTEM_PROMPTS.get(name.strip().lower())
+    if preset:
+        return preset
+    return (
+        f"あなたはこのマルチセッション作業における役割「{name}」を担当します。"
+        "他のセッションと連携しながら、この役割に期待される作業に集中してください。"
+    )
+
+
+_OPENCODE_AGENT_DIR = Path.home() / ".config" / "opencode" / "agents"
+
+# ターミナル名(role)はUI入力値であり、opencode用agentファイル名(f"{name}.md")に
+# そのまま使われる。検証しないと"../../evil"のようなパストラバーサル名で
+# ~/.config/opencode/agents 外への書き込み・既存ファイルの上書きが可能になってしまう
+# (2026-09-01、codexレビューで指摘)。
+_ROLE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def validate_role_name(name: str) -> None:
+    if not _ROLE_NAME_RE.match(name):
+        raise ValueError(
+            f"invalid terminal name: {name!r} "
+            "(英数字・ハイフン・アンダースコアのみ使用できます)"
+        )
+
+
+def opencode_agent_markdown(name: str, prompt: str) -> str:
+    """指定した役割名・プロンプトから、opencodeのMarkdown agent定義を組み立てる。"""
+    return f"---\ndescription: {name} role (agent-wrapper)\nmode: primary\n---\n\n{prompt}\n"
+
+
+def write_opencode_agent_file(
+    name: str, prompt: str, agent_dir: Path | None = None
+) -> Path:
+    """opencodeの`--agent <name>`で選択できるよう、役割専用のagent定義を書き出す。
+
+    opencodeにはシステムプロンプトを生CLIフラグで置き換える手段が無く、
+    agent定義(prompt本文がそのままシステムプロンプトになる)を経由する必要がある。
+    """
+    validate_role_name(name)
+    agent_dir = agent_dir or _OPENCODE_AGENT_DIR
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    path = agent_dir / f"{name}.md"
+    path.write_text(opencode_agent_markdown(name, prompt), encoding="utf-8")
+    return path
 
 
 def add_recent_folder(
@@ -185,15 +282,29 @@ def models_for(harness: str, opencode_exe: str | None = None) -> dict[str, list[
 
 
 def build_argv(
-    harness: str, source: str, model: str, opencode_exe: str | None = None
+    harness: str, source: str, model: str, name: str, opencode_exe: str | None = None
 ) -> list[str]:
+    """harness起動コマンドを組み立てる。
+
+    `name`(ターミナルの役割名)に応じたシステムプロンプトを、既定のシステムプロンプトを
+    置き換える形で挿入する(claude/opencodeのみ。codexはCLIに置き換え手段が無いため
+    素のまま起動する。詳細はROLE_SYSTEM_PROMPTS/system_prompt_forを参照)。
+    """
+    validate_role_name(name)
     if harness == "claude":
-        return ["claude", "--model", model] if model else ["claude"]
+        argv = ["claude", "--system-prompt", system_prompt_for(name)]
+        if model:
+            argv += ["--model", model]
+        return argv
     if harness == "codex":
         return ["codex", "-m", model] if model else ["codex"]
     if harness == "opencode":
         exe = opencode_exe or resolve_opencode_exe()
-        return [exe, "-m", f"{source}/{model}"] if model else [exe]
+        write_opencode_agent_file(name, system_prompt_for(name))
+        argv = [exe, "--agent", name]
+        if model:
+            argv += ["-m", f"{source}/{model}"]
+        return argv
     raise ValueError(f"unknown harness: {harness}")
 
 
@@ -239,9 +350,33 @@ class Session:
 class SessionManager:
     """1つの作業フォルダに対する全ターミナルのライフサイクルを管理する。"""
 
-    def __init__(self) -> None:
+    def __init__(self, broker: ApprovalBroker | None = None) -> None:
         self.sessions: dict[str, Session] = {}
         self._broadcast_tasks: list[asyncio.Task[None]] = []
+        self.approval_broker = broker or ApprovalBroker()
+
+    def shared_state(self, session_id: str, harness: str) -> SharedState:
+        """wrapped runnerを中央Brokerへ接続するセッション別状態を作る。"""
+        return SharedState(
+            broker=self.approval_broker,
+            session_id=session_id,
+            harness=harness,
+        )
+
+    def respond_approval(
+        self,
+        session_id: str,
+        request_id: str,
+        action: str,
+        message: str = "",
+    ) -> bool:
+        try:
+            decision = ApprovalDecision(action, message)  # type: ignore[arg-type]
+        except ValueError:
+            return False
+        return (
+            self.approval_broker.respond(session_id, request_id, decision) is not None
+        )
 
     async def stop_all(self) -> None:
         for task in self._broadcast_tasks:
@@ -260,6 +395,7 @@ class SessionManager:
                 str(term["harness"]),
                 str(term.get("source", "")),
                 str(term.get("model", "")),
+                name,
             )
             session = Session(name, argv, cwd)
             self.sessions[name] = session
@@ -324,6 +460,15 @@ def _make_http_handler(
             if self.path == "/recent-folders":
                 self._json({"folders": load_recent_folders()})
                 return
+            if self.path == "/approvals":
+                self._json(
+                    {
+                        "requests": [
+                            item.to_dict() for item in manager.approval_broker.pending()
+                        ]
+                    }
+                )
+                return
             super().do_GET()
 
         def do_POST(self) -> None:  # noqa: N802
@@ -333,7 +478,11 @@ def _make_http_handler(
                     manager.start(str(body["cwd"]), list(body["terminals"])),
                     loop_holder[0],
                 )
-                names = future.result(timeout=30)
+                try:
+                    names = future.result(timeout=30)
+                except ValueError as e:
+                    self._json({"error": str(e)}, status=400)
+                    return
                 self._json({"names": names})
                 return
             if self.path.startswith("/send/"):
@@ -347,6 +496,36 @@ def _make_http_handler(
                 if body.get("enter", True):
                     text += "\r"
                 session.write(text)
+                self._json({"ok": True})
+                return
+            if self.path.startswith("/approvals/") and self.path.endswith("/respond"):
+                request_id = self.path.removeprefix("/approvals/").removesuffix(
+                    "/respond"
+                )
+                body = self._read_json()
+                session_id = str(body.get("session_id", ""))
+                action = str(body.get("action", ""))
+                message = str(body.get("message", ""))
+                if not session_id or not request_id:
+                    self._json(
+                        {
+                            "ok": False,
+                            "error": "session_id and request_id are required",
+                        },
+                        status=400,
+                    )
+                    return
+                if not manager.respond_approval(
+                    session_id, request_id, action, message
+                ):
+                    self._json(
+                        {
+                            "ok": False,
+                            "error": "request is missing, stale, expired, or invalid",
+                        },
+                        status=409,
+                    )
+                    return
                 self._json({"ok": True})
                 return
             self.send_error(404)

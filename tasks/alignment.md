@@ -37,6 +37,48 @@ AIは全セッションでこのファイルを参照し、解釈のずれを防
 - **NG解釈**: raw-ptyでもollama自動承認やrules.check_destructiveによる強制エスカレーションが効く(誤り、raw-ptyはこれらを経由しない設計)。
 - **OK解釈**: raw-ptyは安全機構より「とにかくそのツールを素の状態で使いたい」場合向け(例: opencodeのTUIをそのまま使う)。
 
+### Approval Broker（承認ブローカー）
+- **意味**: 各harness固有の構造化承認イベントを共通`ApprovalRequest`へ正規化し、機械ルール、utility AI、人間の順で裁定して応答を元のharnessへ返す中央コンポーネント。
+- **NG解釈**: orchestrator LLM自身にOS権限や承認APIを直接持たせ、自由文だけで無制限に許可させる。
+- **OK解釈**: orchestratorは作業配分と説明整理を担当し、最終的な許可能力はポリシー制約付きApproval Brokerだけが持つ。
+
+### permission request / specification question
+- **意味**: `permission request`は具体的な副作用操作の実行可否、`specification question`は仕様・優先順位・スコープを決める意味判断。別のイベント種別・承認規則で扱う。
+- **NG解釈**: どちらも画面上の`y/n`らしい文字列として同じ自動承認ロジックへ渡す。
+- **OK解釈**: 操作権限はtool/action/resourceを根拠に判定し、仕様質問は選択肢・影響・推奨案を整理して、委任済み範囲外なら人間へ上げる。
+
+### Approval Broker 実装対応 / Implementation Mapping
+- **役割 / Responsibility**: 複数セッションの構造化承認要求をUUID単位で保持し、一度きりの応答、期限切れ、キャンセルを管理する。
+- **親 / Parent**: agent-wrapper server
+- **含むもの / Contains**: 共通要求・応答、セッション別pending、harness adapter境界、HTTP一覧・応答API。
+- **実装 / Implementation**:
+  - Components: `ApprovalBroker`, `SharedState`, `OpenCodePermissionAdapter`
+  - Files: `agent_wrapper/approval.py`, `agent_wrapper/approval_adapters.py`, `agent_wrapper/wrapper.py`, `agent_wrapper/server.py`
+  - State: `pending / resolved / expired / cancelled`
+  - API: `GET /approvals`, `POST /approvals/{request_id}/respond`
+- **指示に使える表現 / Human Labels**: 承認ブローカー、中央承認キュー、一次受付
+- **曖昧になりやすい表現 / Ambiguous Labels**: orchestrator(作業配分役であり、Brokerそのものではない)
+
+### 実行・承認画面 / Runtime and Approval Screen
+- **役割 / Responsibility**: 人間の最終判断と複数AIセッションの操作状況を、同じ画面で構造的に提示する。
+- **親 / Parent**: 画面・操作 / Frontend
+- **含むもの / Contains**: 人間承認レール、オーケストレーター端末、役割別端末グリッド。
+- **画面上の位置・利用者からの見え方 / Human View**:
+  - Desktop: 左に人間承認レール、右上にオーケストレーター、右下に4端末を2行2列。
+  - Mobile: 人間承認レール、オーケストレーター、役割別端末の順に縦積み。
+- **実装 / Implementation**:
+  - Components: `approval-rail`, `orchestrator-stage`, `role-terminal-grid`
+  - Files: `agent_wrapper/server_static/index.html`
+  - State: Approval Brokerのpending要求、PTYセッション一覧
+  - API: `GET /approvals`, `POST /approvals/{request_id}/respond`, WebSocket PTY
+- **指示に使える表現 / Human Labels**: 左の承認フロー、人間の判断、上のオーケストレーター、下の4ターミナル、2行2列
+- **曖昧になりやすい表現 / Ambiguous Labels**: ターミナル領域（オーケストレーターを含むか明示する）
+
+### harness承認窓口の現在の検証状態
+- **Claude**: 現行CLI `2.1.251` の通常の`--help`では`--permission-prompt-tool`を確認できなかった。実装は検証済みのAgent SDK `PreToolUse/can_use_tool`方式を正本とする。
+- **Codex**: 既存MCP方式には非推奨警告・enum変更リスクが残る。現行app-serverの実機検証が終わるまで移行しない。
+- **OpenCode**: V2 `permission.hook("evaluate")`の実在は確認済みだがbeta。`0.5.29`から`1.18.25`への大幅更新が観測されたため、transport実装前にexact versionを固定する。Broker側はAPI変更を受けないadapter境界まで実装済み。
+
 ---
 
 ## Misalignment Log（事後記録）

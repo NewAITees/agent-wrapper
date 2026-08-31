@@ -211,7 +211,7 @@ class ApprovalRunnerBase:
         self,
         action: HumanAction,
         message: str = "",
-        request_id: int | None = None,
+        request_id: str | int | None = None,
     ) -> None:
         response = HumanResponse(action=action, message=message.strip())
         resolved = self.state.respond(response, request_id=request_id)
