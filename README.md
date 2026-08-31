@@ -11,7 +11,22 @@ cd <このリポジトリのパス>
 uv tool install -e .
 ```
 
-初回はuvが「toolのshimディレクトリをPATHに追加してよいか」を聞いてくる場合がある(`uv tool update-shell` で後からでも追加できる)。インストール後は新しいターミナルで `agent-wrapper --help` が通ることを確認する。コードを変更した場合、`-e`(editable)なので基本的には再インストール不要。依存関係を追加したときだけ `uv tool install -e . --reinstall` で入れ直す。
+初回はuvが「toolのshimディレクトリをPATHに追加してよいか」を聞いてくる場合がある(`uv tool update-shell` で後からでも追加できる)。インストール後は新しいターミナルで `agent-wrapper --help` が通ることを確認する。コードを変更した場合、`-e`(editable)なので基本的には再インストール不要。依存関係やエントリポイント(`[project.scripts]`)を追加したときだけ `uv tool install -e . --reinstall` で入れ直す。
+
+## サーバー版(複数ターミナルをWebで並列操作)
+
+`agent_wrapper/server.py`(Option B, 自前ConPTY+WebSocket方式。詳細は
+`docs/agent_server_architecture_options.md`と`tasks/alignment.md`を参照)は、
+claude/codex/opencodeを好きな組み合わせでWeb UI上に並べて動かせる常駐サーバー。
+
+```bash
+agent-wrapper-server
+```
+
+これだけでブラウザが自動で開き、セットアップ画面(作業フォルダ選択→ターミナル構成→起動)
+が表示される。承認ゲート(ollama一次判定・強制人間承認)は未統合で、各harness自身の
+対話プロンプトに人間が直接答える方式(raw-pty)。既存の`agent-wrapper`(承認ゲート付き)
+とは別系統のツールとして併存している。
 
 ## 動かし方
 

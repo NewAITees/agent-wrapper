@@ -10,8 +10,10 @@ dependencies = [
     "flask==3.1.3",
     "mcp==1.28.1",
     "psutil>=7.2.2",
+    "pywinpty==3.0.5",
     "qrcode==8.2",
     "requests==2.32.3",
+    "websockets==17.1",
 ]
 
 [dependency-groups]
@@ -26,8 +28,13 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = ["."]
 
+[[tool.mypy.overrides]]
+module = "winpty.*"
+ignore_missing_imports = true
+
 [project.scripts]
 agent-wrapper = "agent_wrapper.main:main"
+agent-wrapper-server = "agent_wrapper.server:main"
 
 [build-system]
 requires = ["hatchling==1.30.1"]
