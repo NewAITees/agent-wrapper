@@ -15,6 +15,60 @@ from agent_wrapper.runners.tool_describe import GATED_TOOLS, describe_tool_call
 from agent_wrapper.wrapper import SharedState
 
 
+def _mock_sdk_client() -> mock.MagicMock:
+    client = mock.MagicMock()
+    client.__aenter__ = mock.AsyncMock(return_value=client)
+    client.__aexit__ = mock.AsyncMock(return_value=False)
+    client.query = mock.AsyncMock()
+    return client
+
+
+class RunAsyncRolePermissionTests(unittest.TestCase):
+    """role設定がSDKの自動許可へ流れず、PreToolUseで強制されることを確認する。"""
+
+    @mock.patch("agent_wrapper.runners.claude_runner.ClaudeSDKClient")
+    @mock.patch("agent_wrapper.runners.claude_runner.ClaudeAgentOptions")
+    def test_role_permission_is_not_forwarded_to_sdk_auto_allow_options(
+        self, mock_options, mock_client_cls
+    ):
+        captured: dict[str, object] = {}
+        mock_options.side_effect = lambda **kwargs: (
+            captured.update(kwargs) or mock.Mock()
+        )
+        mock_client_cls.return_value = _mock_sdk_client()
+        runner = ClaudeRunner(
+            prompt="test",
+            cwd=".",
+            state=SharedState(),
+            permission={
+                "allowedTools": ["Bash(git status)"],
+                "disallowedTools": ["Edit", "Write"],
+            },
+        )
+
+        with mock.patch.object(runner, "_converse", new=mock.AsyncMock()):
+            asyncio.run(runner._run_async())
+
+        self.assertEqual(captured["allowed_tools"], [])
+        self.assertEqual(captured["disallowed_tools"], [])
+
+    @mock.patch("agent_wrapper.runners.claude_runner.ClaudeSDKClient")
+    @mock.patch("agent_wrapper.runners.claude_runner.ClaudeAgentOptions")
+    def test_no_permission_means_no_restriction(self, mock_options, mock_client_cls):
+        captured: dict[str, object] = {}
+        mock_options.side_effect = lambda **kwargs: (
+            captured.update(kwargs) or mock.Mock()
+        )
+        mock_client_cls.return_value = _mock_sdk_client()
+        runner = ClaudeRunner(prompt="test", cwd=".", state=SharedState())
+
+        with mock.patch.object(runner, "_converse", new=mock.AsyncMock()):
+            asyncio.run(runner._run_async())
+
+        self.assertEqual(captured["allowed_tools"], [])
+        self.assertEqual(captured["disallowed_tools"], [])
+
+
 class DescribeToolCallTests(unittest.TestCase):
     def test_bash_returns_command(self):
         text = describe_tool_call("Bash", {"command": "npm install lodash"})
@@ -193,6 +247,112 @@ class PreToolUseHookTests(unittest.TestCase):
             )
         )
         self.assertEqual(output, {})
+
+    def test_planner_markdown_write_reaches_broker_gate(self):
+        runner = ClaudeRunner(
+            prompt="test",
+            cwd=".",
+            state=SharedState(),
+            permission={
+                "allowedTools": ["Write(**/*.md)"],
+                "disallowedTools": ["Write"],
+            },
+        )
+
+        output = asyncio.run(
+            runner._pre_tool_use_hook(
+                {
+                    "hook_event_name": "PreToolUse",
+                    "tool_name": "Write",
+                    "tool_input": {"file_path": "tasks/plan.md"},
+                },
+                "tool-use-1",
+                {"signal": None},
+            )
+        )
+
+        self.assertEqual(output["hookSpecificOutput"]["permissionDecision"], "ask")
+
+    def test_planner_source_write_is_denied_by_role(self):
+        runner = ClaudeRunner(
+            prompt="test",
+            cwd=".",
+            state=SharedState(),
+            permission={
+                "allowedTools": ["Write(**/*.md)"],
+                "disallowedTools": ["Write"],
+            },
+        )
+
+        output = asyncio.run(
+            runner._pre_tool_use_hook(
+                {
+                    "hook_event_name": "PreToolUse",
+                    "tool_name": "Write",
+                    "tool_input": {"file_path": "agent_wrapper/server.py"},
+                },
+                "tool-use-1",
+                {"signal": None},
+            )
+        )
+
+        self.assertEqual(output["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_worker_commit_is_denied_but_safe_bash_reaches_broker(self):
+        runner = ClaudeRunner(
+            prompt="test",
+            cwd=".",
+            state=SharedState(),
+            permission={"disallowedTools": ["Bash(git commit *)"]},
+        )
+
+        denied = asyncio.run(
+            runner._pre_tool_use_hook(
+                {
+                    "hook_event_name": "PreToolUse",
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "git commit -m test"},
+                },
+                "tool-use-1",
+                {"signal": None},
+            )
+        )
+        gated = asyncio.run(
+            runner._pre_tool_use_hook(
+                {
+                    "hook_event_name": "PreToolUse",
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "git status"},
+                },
+                "tool-use-2",
+                {"signal": None},
+            )
+        )
+
+        self.assertEqual(denied["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertEqual(gated["hookSpecificOutput"]["permissionDecision"], "ask")
+
+
+class StopRaceTests(unittest.TestCase):
+    def test_stop_before_async_task_initializes_prevents_runner_start(self):
+        runner = ClaudeRunner(prompt="test", cwd=".", state=SharedState())
+        run_async = mock.AsyncMock()
+        runner._run_async = run_async
+
+        runner.stop()
+        asyncio.run(runner._run_main())
+
+        run_async.assert_not_awaited()
+        self.assertEqual(runner.state.snapshot()["status"], "stopped")
+
+    def test_stop_after_async_loop_closed_does_not_raise(self):
+        runner = ClaudeRunner(prompt="test", cwd=".", state=SharedState())
+        runner._run_async = mock.AsyncMock()
+        asyncio.run(runner._run_main())
+
+        runner.stop()
+
+        self.assertEqual(runner.state.snapshot()["status"], "stopped")
 
 
 class _FakeClient:

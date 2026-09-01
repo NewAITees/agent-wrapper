@@ -49,6 +49,10 @@ class ApprovalRequestInput:
             raise ValueError(f"unsupported approval kind: {self.kind}")
         if not self.session_id.strip():
             raise ValueError("session_id is required")
+        if self.expires_at is not None and self.expires_at.tzinfo is None:
+            object.__setattr__(
+                self, "expires_at", self.expires_at.replace(tzinfo=datetime.UTC)
+            )
 
 
 @dataclass(slots=True)
@@ -131,13 +135,15 @@ class ApprovalBroker:
     def pending(self, session_id: str | None = None) -> list[ApprovalRequest]:
         now = datetime.datetime.now(datetime.UTC)
         with self._lock:
-            self._expire_locked(now)
-            return [
+            expired_callbacks = self._expire_locked(now)
+            pending = [
                 request
                 for request in self._requests
                 if request.status == "pending"
                 and (session_id is None or request.session_id == session_id)
             ]
+        self._notify(expired_callbacks)
+        return pending
 
     def respond(
         self,
@@ -149,28 +155,52 @@ class ApprovalBroker:
         resolved: ApprovalRequest | None = None
         now = datetime.datetime.now(datetime.UTC)
         with self._lock:
-            self._expire_locked(now)
+            expired_callbacks = self._expire_locked(now)
             for request in self._requests:
                 if request.request_id != request_id:
                     continue
                 if request.session_id != session_id or request.status != "pending":
-                    return None
-                request.status = "resolved"
-                request.decision = decision
-                callback = request.callback
-                resolved = request
+                    break
+                else:
+                    request.status = "resolved"
+                    request.decision = decision
+                    callback = request.callback
+                    resolved = request
                 break
+        self._notify(expired_callbacks)
         if callback is not None:
             callback(decision)
         return resolved
 
     def cancel_session(self, session_id: str) -> None:
+        callbacks: list[DecisionCallback] = []
         with self._lock:
             for request in self._requests:
                 if request.session_id == session_id and request.status == "pending":
                     request.status = "cancelled"
+                    callbacks.append(request.callback)
+        self._notify(callbacks, ApprovalDecision("deny", "session cancelled"))
 
-    def _expire_locked(self, now: datetime.datetime) -> None:
+    def cancel_all(self) -> None:
+        callbacks: list[DecisionCallback] = []
+        with self._lock:
+            for request in self._requests:
+                if request.status == "pending":
+                    request.status = "cancelled"
+                    callbacks.append(request.callback)
+        self._notify(callbacks, ApprovalDecision("deny", "session cancelled"))
+
+    @staticmethod
+    def _notify(
+        callbacks: list[DecisionCallback],
+        decision: ApprovalDecision | None = None,
+    ) -> None:
+        terminal_decision = decision or ApprovalDecision("deny", "request expired")
+        for callback in callbacks:
+            callback(terminal_decision)
+
+    def _expire_locked(self, now: datetime.datetime) -> list[DecisionCallback]:
+        callbacks: list[DecisionCallback] = []
         for request in self._requests:
             if (
                 request.status == "pending"
@@ -178,3 +208,5 @@ class ApprovalBroker:
                 and request.expires_at <= now
             ):
                 request.status = "expired"
+                callbacks.append(request.callback)
+        return callbacks

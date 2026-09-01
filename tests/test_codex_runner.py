@@ -338,6 +338,9 @@ class OnElicitationTests(unittest.TestCase):
 
 
 class SandboxOptionTests(unittest.TestCase):
+    def test_current_mcp_approval_policy_is_on_request(self):
+        self.assertEqual(CodexRunner.APPROVAL_POLICY, "on-request")
+
     def test_default_sandbox_is_full_access(self):
         """既定はサンドボックスなし。根拠はCodexRunnerのクラスコメントと
         docs/agent_wrapper_permission_policy.md(承認ゲートは常に有効)。"""

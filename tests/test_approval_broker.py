@@ -87,6 +87,7 @@ class ApprovalBrokerTests(unittest.TestCase):
             ApprovalDecision("always")  # type: ignore[arg-type]
 
     def test_expired_request_cannot_be_approved(self):
+        decisions: list[ApprovalDecision] = []
         request = self.broker.submit(
             ApprovalRequestInput(
                 session_id="worker-1",
@@ -97,7 +98,8 @@ class ApprovalBrokerTests(unittest.TestCase):
                 reason="状態確認",
                 expires_at=datetime.datetime.now(datetime.UTC)
                 - datetime.timedelta(seconds=1),
-            )
+            ),
+            callback=decisions.append,
         )
 
         self.assertIsNone(
@@ -106,6 +108,45 @@ class ApprovalBrokerTests(unittest.TestCase):
             )
         )
         self.assertEqual(request.status, "expired")
+        self.assertEqual(decisions, [ApprovalDecision("deny", "request expired")])
+
+    def test_naive_expiration_is_normalized_to_utc(self):
+        request = self.broker.submit(
+            ApprovalRequestInput(
+                session_id="worker-1",
+                harness="claude",
+                kind="permission",
+                action="edit",
+                resource="src/app.py",
+                reason="編集",
+                expires_at=datetime.datetime(2030, 1, 1, 12, 0),
+            )
+        )
+
+        self.assertEqual(
+            request.expires_at,
+            datetime.datetime(2030, 1, 1, 12, 0, tzinfo=datetime.UTC),
+        )
+
+    def test_cancel_session_notifies_waiter_once(self):
+        decisions: list[ApprovalDecision] = []
+        request = self.broker.submit(
+            ApprovalRequestInput(
+                session_id="worker-1",
+                harness="claude",
+                kind="permission",
+                action="edit",
+                resource="src/app.py",
+                reason="編集",
+            ),
+            callback=decisions.append,
+        )
+
+        self.broker.cancel_session("worker-1")
+        self.broker.cancel_session("worker-1")
+
+        self.assertEqual(request.status, "cancelled")
+        self.assertEqual(decisions, [ApprovalDecision("deny", "session cancelled")])
 
     def test_pending_lists_all_sessions_in_creation_order(self):
         first = self.broker.submit(

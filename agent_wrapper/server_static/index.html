@@ -270,6 +270,7 @@
       { name: "orchestrator", harness: "claude" },
       { name: "planner", harness: "claude" },
       { name: "worker", harness: "opencode" },
+      { name: "tester", harness: "opencode" },
       { name: "reviewer", harness: "opencode" },
       { name: "utility", harness: "opencode", source: "ollama" },
     ];
@@ -444,6 +445,7 @@
         harness: row.querySelector(".harness-select").value,
         source: row.querySelector(".source-select").value,
         model: row.querySelector(".model-select").value,
+        mode: ["claude", "codex"].includes(row.querySelector(".harness-select").value) ? "wrapped" : "raw-pty",
       })).filter((terminal) => terminal.name);
     }
 
@@ -504,7 +506,10 @@
         nameEl.textContent = name;
         const badge = document.createElement("span");
         badge.className = "harness-badge";
-        badge.textContent = config.harness || "session";
+        const approvalMode = config.harness === "codex"
+          ? "計画承認のみ"
+          : (config.mode === "wrapped" ? "Broker接続" : (config.harness === "opencode" ? "Broker未検証" : "PTY直接承認"));
+        badge.textContent = `${config.harness || "session"} · ${approvalMode}`;
         const meta = document.createElement("span");
         meta.className = "pane-meta";
         meta.textContent = [config.source, config.model].filter(Boolean).join(" / ") || "既存セッション";

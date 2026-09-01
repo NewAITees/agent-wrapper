@@ -32,6 +32,8 @@ claude-agent-sdk経由で実際のClaude Codeを動かすrunner。
 参照: docs/agent_wrapper_sdk_integration_plan.md
 """
 
+import fnmatch
+
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, HookMatcher
 from claude_agent_sdk.types import (
     AssistantMessage,
@@ -61,6 +63,9 @@ class ClaudeRunner(ApprovalRunnerBase):
     """
 
     async def _run_async(self) -> None:
+        # allowed_toolsは一致した呼び出しをcan_use_toolより先に自動許可するため、
+        # role設定をSDKへ直接渡さない。roleの明示拒否はPreToolUseで行い、
+        # 通過した呼び出しは必ずcan_use_toolの3層ゲートへ送る。
         options = ClaudeAgentOptions(
             permission_mode="default",
             cwd=self.cwd,
@@ -71,6 +76,8 @@ class ClaudeRunner(ApprovalRunnerBase):
                 ]
             },
             setting_sources=["project"],
+            allowed_tools=[],
+            disallowed_tools=[],
         )
         async with ClaudeSDKClient(options=options) as client:
             await client.query(self.initial_prompt)
@@ -155,12 +162,58 @@ class ClaudeRunner(ApprovalRunnerBase):
     ) -> HookJSONOutput:
         if input_data.get("hook_event_name") != "PreToolUse":
             return {}
+        tool_name = str(input_data.get("tool_name", ""))
+        tool_input = input_data.get("tool_input", {})
+        denial = self._role_denial(
+            tool_name,
+            tool_input if isinstance(tool_input, dict) else {},
+        )
+        if denial is not None:
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": denial,
+                }
+            }
         return {
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "ask",
             }
         }
+
+    def _role_denial(self, tool_name: str, input_data: dict) -> str | None:
+        """role設定の明示拒否だけを判定する。許可操作もBrokerを迂回させない。"""
+        disallowed = [str(item) for item in self.permission.get("disallowedTools", [])]
+        allowed = [str(item) for item in self.permission.get("allowedTools", [])]
+
+        if tool_name in {"Edit", "Write"} and tool_name in disallowed:
+            path = str(input_data.get("file_path", ""))
+            markdown_exception = any(
+                item.startswith(f"{tool_name}(") and item.endswith("*.md)")
+                for item in allowed
+            )
+            if markdown_exception and path.lower().endswith(".md"):
+                return None
+            return f"role policy denies {tool_name} for {path or 'this file'}"
+
+        if tool_name == "Bash":
+            command = str(input_data.get("command", "")).strip()
+            for entry in disallowed:
+                if entry == "Bash":
+                    return "role policy denies Bash"
+                if not (entry.startswith("Bash(") and entry.endswith(")")):
+                    continue
+                pattern = entry[5:-1]
+                if fnmatch.fnmatchcase(command, pattern) or (
+                    pattern.endswith(" *") and command == pattern[:-2]
+                ):
+                    return f"role policy denies Bash command: {command}"
+
+        if tool_name in disallowed:
+            return f"role policy denies {tool_name}"
+        return None
 
     async def _can_use_tool(
         self,

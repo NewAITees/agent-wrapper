@@ -27,6 +27,7 @@ ClaudeRunner(claude-agent-sdk)とCodexRunner(codex mcp-server)で、
 
 import asyncio
 import threading
+from typing import Any
 
 from .. import ollama_client, rules
 from ..wrapper import (
@@ -60,13 +61,20 @@ class ApprovalRunnerBase:
         state: SharedState,
         ollama_model: str = "gemma4:e4b",
         notifier: Notifier | None = None,
+        permission: dict[str, Any] | None = None,
     ) -> None:
         self.prompt = prompt
         self.cwd = cwd
         self.state = state
         self.ollama_model = ollama_model
         self.notifier: Notifier = notifier or (lambda level, title, body: None)
+        # 役割(server.py ROLE_PERMISSIONS)ごとの強制制限。ClaudeRunnerは
+        # PreToolUseで明示拒否だけを適用し、許可操作も共通の3層ゲートへ送る。
+        self.permission: dict[str, Any] = permission or {}
         self._deny_count = 0
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._task: asyncio.Task[None] | None = None
+        self._stop_requested = threading.Event()
 
     @property
     def initial_prompt(self) -> str:
@@ -79,8 +87,19 @@ class ApprovalRunnerBase:
         return thread
 
     def _run_in_thread(self) -> None:
+        asyncio.run(self._run_main())
+
+    async def _run_main(self) -> None:
+        # stop()から別スレッド越しにこのタスクをキャンセルできるよう、
+        # 実行中のループ/タスクを保持しておく(2026-09-01追加。従来は
+        # state.set_stopped()するだけでタスク自体は動き続け、停止後も
+        # 新しいターンが進んで承認要求が生成され続ける不具合があった)。
+        self._loop = asyncio.get_running_loop()
+        self._task = asyncio.current_task()
         try:
-            asyncio.run(self._run_async())
+            if self._stop_requested.is_set():
+                return
+            await self._run_async()
             if self.state.snapshot()["status"] != "stopped":
                 # 却下してもセッションは継続しうる(interrupt=False)ので「中断」と
                 # 断定せず、却下があった事実だけを正常完了の詳細に添える
@@ -88,6 +107,8 @@ class ApprovalRunnerBase:
                 if self._deny_count:
                     complete_detail += f"(人間の却下 {self._deny_count}件を含む)"
                 self.state.set_stopped("normal_complete", complete_detail)
+        except asyncio.CancelledError:
+            pass
         except Exception as e:
             self.state.append_log(f"(runner error: {e})")
             self.state.set_stopped("error", str(e))
@@ -238,4 +259,12 @@ class ApprovalRunnerBase:
         self.respond("deny")
 
     def stop(self) -> None:
+        self._stop_requested.set()
         self.state.set_stopped("terminated", "stop() が呼ばれました")
+        if (
+            self._loop is not None
+            and not self._loop.is_closed()
+            and self._task is not None
+            and not self._task.done()
+        ):
+            self._loop.call_soon_threadsafe(self._task.cancel)
