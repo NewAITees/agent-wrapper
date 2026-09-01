@@ -5,3 +5,5 @@ __pycache__/
 .ruff_cache/
 .pytest_cache/
 .playwright-cli/
+.opencode/
+.claude/launch.json
