@@ -151,3 +151,28 @@ play_groundのtasks/lessons.mdからagent_wrapper関連エントリを転記し�
 - **原因**: ブラウザ標準の`[hidden]`表示規則より、後から定義したクラスセレクタの`display`指定がカスケード上で優先された。
 - **対策**: 動的に表示を切り替える画面では`[hidden] { display: none !important; }`を共通規則として明示し、pytestだけでなく実ブラウザのスクリーンショットで空白・重なりを確認する。
 
+## 2026-09-01 OpenCode承認検証でテスト都合を本番設計へ持ち込んだ
+- **症状**: ブラウザを使わずにテストする方法を求められた際、`permission.asked`を`tool.execute.before`へ置換し、OpenCode側の権限を`allow`にする案まで提案した。
+- **原因**: 「テスト手段を簡単にする」という対象を、「本番の承認方式を変更する」と誤って拡大解釈した。テスト容易性と安全境界を分離できていなかった。
+- **対策**: 検証が難しい場合も、まずテストハーネスだけを変更対象にする。本番の権限方式、フェイルセーフ、role制限を変える案は別タスクとして影響を説明し、明示的な承認なしに混在させない。未実証の経路は未完了と記録する。
+
+## 2026-09-01 WrappedSession.stop()がバックグラウンドタスクを止めておらず暴走した
+- **症状**: workerセッションをレートリミット中に`/sessions/<name>/stop`で止め、すぐ同名で再起動して同じタスクを送ると、停止したはずの旧セッションが動き続けて`plan_approval`を延々と生成し(1回で17〜22件)、しかも「session cancelled」という前セッションの却下文言が新セッションの入力に混入したかのような支離滅裂な応答が返った。
+- **原因**: `ApprovalRunnerBase.stop()`は`SharedState.set_stopped()`で表示状態を変えるだけで、`asyncio.run(self._run_async())`を実行している裏のタスク自体はキャンセルしていなかった。そのため旧runnerのループ(`_converse`)が動き続け、`approval_broker.cancel_session()`実行後に生成された新規要求は対象外(pending状態のまま)になり、際限なく積み上がった。
+- **対策**: `start()`が動くイベントループとタスクを`self._loop`/`self._task`に保持し、`stop()`から`loop.call_soon_threadsafe(task.cancel)`で確実にキャンセルするよう`runners/base.py`を修正(`asyncio.CancelledError`は`_run_main()`で握りつぶす)。教訓: 「stateを止まった扱いにする」ことと「実際に動いている非同期タスクを止める」ことは別物で、バックグラウンドスレッド+asyncioの組み合わせでは後者を明示的に配線しないと、停止後もループが生存し続ける。
+
+## 2026-09-01 WrappedSession.write()が複数行本文の途中で誤って送信していた
+- **症状**: `POST /send/<name>`に複数行のタスク仕様(JSON文字列内に`\n`を含む)を渡すと、workerが「タスク内容が空欄のようです」と繰り返し聞き返した。
+- **原因**: `WrappedSession.write()`が`\r`と`\n`の両方を「Enter(送信)」として扱っていたため、本文中の最初の改行の時点で(まだ1行目しか溜まっていないバッファで)`_start()`が呼ばれてしまい、以降の`write()`は`self._runner is not None`のため即no-opになり、残りの本文が丸ごと捨てられていた。
+- **対策**: 送信判定を`\r`のみに限定し、`\n`は本文の一部としてバッファへそのまま積むよう修正(`server.py`の`WrappedSession.write()`)。教訓: ターミナルのキー入力中継(1文字ずつのEnter判定)とHTTP経由でまとめて渡す複数行本文は前提が異なるので、後者を送るAPIがある場合は「本文中の改行」と「送信トリガー」を同じ文字で判定しないこと。
+
+## 2026-09-01 Claude SDKのallowed_toolsが中央承認を迂回した
+- **症状**: role別制限を多重防御として追加したつもりで`allowed_tools`を設定したところ、一致する操作が`can_use_tool`へ到達せず自動許可され、Approval Brokerを迂回した。また`disallowed_tools=["Edit", "Write"]`とMarkdown限定allowを併記したため、disallowが勝って例外も機能しなかった。
+- **原因**: SDKのallow/disallowを「許可範囲の制限」と解釈し、`allowed_tools`が自動承認、`disallowed_tools`がツール自体の除去であるという実際の境界契約を確認せず組み合わせた。
+- **対策**: wrapped Claudeではrole設定をSDKのallow/disallowへ渡さない。PreToolUseでroleの明示拒否とMarkdown例外を判定し、通過操作は`ask`で必ず`can_use_tool`の共通ゲートへ送る。SDKオプションの名前ではなく、コールバック到達順と優先規則を実装前に確認する。
+
+## 2026-09-01 asyncio runner停止には開始前フラグも必要
+- **症状**: `stop()`からtask.cancelする修正後も、runnerスレッドが`_loop`/`_task`を設定する直前に停止されるとキャンセルされず開始できた。
+- **原因**: 実行中タスクだけを停止対象にし、「停止要求が先に到着する」TOCTOU競合を考慮していなかった。
+- **対策**: スレッドセーフな停止フラグを先に立て、`_run_main()`がloop/task設定直後に再確認する。終了済み・closed loopへの再停止も安全にno-opとなる条件をテストする。
+

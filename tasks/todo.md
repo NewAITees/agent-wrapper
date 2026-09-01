@@ -3,15 +3,30 @@
 2. 完了したら `[x]` にする
 3. セクションが全て完了したら、セクションごと削除してよい
 
-## spec: Approval Broker統合の残課題(2026-09-01、codexレビューで判明)
-- [x] role名のパストラバーサル/任意ファイル書き込み脆弱性を修正(`validate_role_name`, server.py)。修正済み・テスト済み
-- [ ] (重大) `SessionManager.start()`が常にraw-PTYの`Session`を直接生成しており、Approval Broker/`SharedState`/adapterへ実際には未接続。`/approvals`は本番では常に空、UIの承認レールから実ターミナルへ応答できない
-- [ ] (重大) `ApprovalBroker._expire_locked()`が要求をexpiredにするだけでcallbackを呼ばないため、期限切れ時にrunner(wrapper.py/runners/base.py)が永久に待機し続ける。`SharedState.snapshot()`も期限切れ後に表示だけ`running`に戻るため二重に不整合
-- [ ] (高) `stop_all()`がBrokerのpending要求をcancelしない。同名セッションを再起動すると前セッションの要求が残り得る(`SharedState.cancel_session()`はあるが`SessionManager`が呼べる構造になっていない)
-- [ ] (中) `ApprovalRequestInput.expires_at`にnaive datetimeが渡るとBrokerの比較で`TypeError`になる。timezone検証/正規化が必要
-- [ ] (中) `build_argv()`の`name`引数が既定値なしの必須位置引数になり、旧シグネチャ`build_argv(harness, source, model)`の呼び出しは`TypeError`になる(このリポジトリ内の呼び出しは全て更新済みだが、外部利用者がいる場合は破壊的変更)
-- [ ] (中) HTTP API(`/approvals`, `/approvals/<id>/respond`)の実レスポンス・エラー系(400/409)・二重応答・別セッションからの応答拒否・期限切れ要求への応答、を検証する結合テストが無い(現状はBroker単体のユニットテストとHTML文字列存在確認のみ)
-- 背景: このApproval Broker機能はユーザーが別のAIエージェントに並行して実装を依頼しているもの。上記はcodexにread-onlyレビューを依頼して判明した。パストラバーサルのみClaudeが直接修正し、残りは実装元のAIエージェントでの対応を想定して記録のみ行う。
+## fix: コミット前安全レビュー指摘 (2026-09-01、承認済み)
+- [x] Claude role制限が`allowed_tools`経由でApproval Brokerを迂回しないようPreToolUseへ統合する
+- [x] planner/reviewerのMarkdown例外と、それ以外の書き込み拒否を回帰テストで固定する
+- [x] runner開始直後の`stop()`でも非同期処理が開始・継続しないようにする
+- [x] OpenCode内部`ses_...`と画面セッション名を対応付け、`stop_one()`でpendingをキャンセルする
+- [x] OpenCodeの未検証表示、検証用ポート変更、未完成スモークの型エラーを整理する
+- [x] pytest・ruff format/check・mypyを通し、再レビュー後にコミット対象を提示する(212 passed、15 subtests)
+
+## spec: Approval Broker統合の残課題(2026-09-01、codexレビューで判明) — 解消済み
+- [x] role名のパストラバーサル/任意ファイル書き込み脆弱性を修正(`validate_role_name`, server.py)
+- [x] `SessionManager.start()`がclaude/codexを既定で`wrapped`(`WrappedSession`)方式にするよう修正され、Approval Broker/`SharedState`へ実接続された(実機検証済み: reviewerロールでWriteをSDKレベルで拒否・plan_approvalの承認/却下がAPI経由で実際に機能することを2026-09-01に確認)
+- [x] `ApprovalBroker._expire_locked()`が期限切れ時にcallbackを呼ぶよう修正され、`test_expired_request_cannot_be_approved`等で検証済み
+- [x] `stop_one()`/`stop_all()`が`approval_broker.cancel_session()`を呼ぶよう修正済み(Claudeが実装)
+- [x] `ApprovalRequestInput.expires_at`のnaive datetime正規化が実装され、`test_naive_expiration_is_normalized_to_utc`で検証済み
+- [x] `build_argv()`の`name`引数に`"worker"`既定値を追加し後方互換を維持(Claudeが実装)
+- [x] `ApprovalHttpIntegrationTests`で実HTTPサーバー相手の結合テスト(200/409等)が追加済み
+- 背景: このApproval Broker機能はユーザーが別のAIエージェントに並行して実装を依頼しているもの。上記はcodexのread-onlyレビューで判明した課題群で、2026-09-01中に全て解消されたことを再確認した。
+
+## spec: 機械的テスト実行API `/run-tests` (2026-09-01、実装済み) — 解消済み
+- [x] `POST /run-tests`を追加する(`SessionManager.cwd`に対しsubprocess実行)
+- [x] 決め打ちコマンド(`uv run pytest -q`)のみをsubprocessで直接実行し、AIを介さない
+- [x] 終了コード・stdout/stderr・失敗テスト名(`parse_pytest_failures`)を構造化JSONで返す
+- [x] tester/reviewerロールがこの結果を参照できる(ROLE_SYSTEM_PROMPTSで`/run-tests`を案内済み)
+- 背景: テストのライフサイクルは「設計(人間/planner)→実装(tester)→実行(機械的、AI不要)」の3段階に分けるべきという2026-09-01の議論に基づく。Claudeが実装し、実サーバーで`/run-tests`が実際にpytestを実行して構造化結果を返すことを実機検証済み(2026-09-01)。
 
 ## docs: Repository contributor guide (2026-09-01)
 - [x] 既存AGENTS.mdがないことを確認する
@@ -40,7 +55,7 @@
   - B案: 各raw-ptyセッションの出力を`rules.check_destructive`相当の正規表現で監視し、検知したらorchestrator(人間)に通知する(旧wrapper.py方式の再利用に近い)
   - C案: 許可が重要なセッションは生ptyではなく既存の`wrapped`方式(ClaudeRunner/CodexRunner、SDK/MCPフックで構造化された許可イベントが取れる)をorchestrator配下に組み込む。opencodeはserveが不安定なため当面対象外
 - [ ] orchestratorの役割定義: 各タスク(セッション)への仕事の割り振り(ディスパッチ)をどう行うか(orchestrator自身がLLMセッションとして他セッションのinboxファイルに指示を書き込む想定に近いか要確認)
-- [ ] utilityの役割定義: `ollama_client.py`にある既存の一次判定関数群(judge_permission/classify_destructive_match/summarize_chunk/judge_conversational_question等)を、utilityロールのセッション(またはサブエージェント)からどう呼び出せるようにするか
+- [x] utilityの役割定義: `POST /utility/judge`(body: `mode`(permission/summarize/conversational)+`text`)を追加し、`ollama_client.judge_permission`/`summarize_chunk`/`judge_conversational_question`をraw-ptyセッション(utilityロール等)からもHTTP経由で呼べるようにした(agent-wrapper-server自体のworkerセッションに実装を委譲し、2026-09-01に実装・pytest 204件/ruff/mypy通過を確認済み)。呼び出し元(utilityロール実体)からの実利用はまだスコープ外。
 - 背景: orchestratorは元々のagent-wrapperプロジェクトの主眼(ollamaによる一次受付+人間承認)をこの新しいマルチセッションサーバーに引き継ぐ役割として位置づけられている。utilityはその一次受付処理をollamaで担う雑務サブエージェント。
 
 ## research: 承認一次受付と人間エスカレーション (2026-09-01)
@@ -49,6 +64,8 @@
 - [x] raw-PTY出力監視を主経路にしない統一Approval Broker案を整理する
 - [x] ApprovalRequest共通スキーマと状態遷移を仕様化する
 - [ ] OpenCode V2のpermission evaluate hookまたはserver SSEを使う最小アダプターを実機検証する
+- [ ] OpenCode 1.18.25のTUIで、安定版`permission.asked`がproject-local pluginへ配送され、Broker承認後に`once`で再開することを実証する。現状はplugin loadとpermission生成まで確認済みだが配送は未確認。詳細: `docs/opencode_approval_research.md`
+- [ ] OpenCode本番コードを変えず、ブラウザにも依存しない検証方法をユーザーと合意してから実装する
 - [ ] 現行Codexでapp-serverの承認イベントを検証し、mcp-server依存の移行可否を決める
 - [x] 複数セッションを対象にrequest_id単位の競合・重複応答テストを追加する(再接続はtransport実装時に追加)
 
