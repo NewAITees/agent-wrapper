@@ -48,6 +48,7 @@ import winpty
 from websockets.asyncio.server import serve
 
 from . import ollama_client, rules
+from .aituber_push import aituber_pusher, poll_inbox
 from .approval import ApprovalBroker, ApprovalDecision
 from .approval_adapters import OpenCodePermissionAdapter
 from .runners.claude_runner import ClaudeRunner
@@ -629,6 +630,7 @@ class Session:
         self.proc = winpty.PtyProcess.spawn(argv, cwd=cwd)
         self.subscribers: set[object] = set()
         self.scrollback = bytearray()
+        self._stop_notified = False
 
     def write(self, text: str) -> None:
         self.proc.write(text)
@@ -656,6 +658,12 @@ class Session:
     def terminate(self) -> None:
         if self.proc.isalive():
             self.proc.terminate(force=True)
+        self._notify_stopped()
+
+    def _notify_stopped(self) -> None:
+        if not self._stop_notified:
+            self._stop_notified = True
+            aituber_pusher.send("session_stopped", self.name, "session stopped")
 
     async def broadcast_loop(self) -> None:
         loop = asyncio.get_running_loop()
@@ -676,6 +684,7 @@ class Session:
                     dead.append(ws)
             for ws in dead:
                 self.subscribers.discard(ws)
+        self._notify_stopped()
 
 
 class WrappedSession:
@@ -701,6 +710,7 @@ class WrappedSession:
         self._input = ""
         self._runner: ClaudeRunner | CodexRunner | None = None
         self._terminated = False
+        self._stop_notified = False
         self.state.append_log(
             "[wrapped] タスクを入力してEnterを押すと、承認Broker経由で開始します。"
         )
@@ -761,6 +771,12 @@ class WrappedSession:
             self._runner.stop()
         else:
             self.state.set_stopped("terminated", "session stopped before prompt")
+        self._notify_stopped()
+
+    def _notify_stopped(self) -> None:
+        if not self._stop_notified:
+            self._stop_notified = True
+            aituber_pusher.send("session_stopped", self.name, "session stopped")
 
     async def broadcast_loop(self) -> None:
         sent = ""
@@ -780,6 +796,7 @@ class WrappedSession:
                     self.subscribers.discard(ws)
                 sent = current
             await asyncio.sleep(0.1)
+        self._notify_stopped()
 
 
 class SessionManager:
@@ -792,6 +809,7 @@ class SessionManager:
         self.cwd: str | None = None
         self._external_session_ids: dict[str, set[str]] = {}
         self._external_session_ids_lock = threading.Lock()
+        self._inbox_task: asyncio.Task[None] | None = None
 
     def shared_state(self, session_id: str, harness: str) -> SharedState:
         """wrapped runnerを中央Brokerへ接続するセッション別状態を作る。"""
@@ -858,6 +876,9 @@ class SessionManager:
         for name in list(self.sessions):
             await self.stop_one(name)
         self.approval_broker.cancel_all()
+        if self._inbox_task is not None:
+            self._inbox_task.cancel()
+            self._inbox_task = None
 
     async def stop_one(self, name: str) -> bool:
         """1セッションだけを停止・破棄する(全体を作り直さずに済ませるため)。"""
@@ -878,6 +899,12 @@ class SessionManager:
     async def start(self, cwd: str, terminals: list[dict[str, Any]]) -> list[str]:
         await self.stop_all()
         self.cwd = cwd
+        if aituber_pusher.enabled:
+            self._inbox_task = asyncio.create_task(
+                poll_inbox(
+                    Path(cwd) / ".agent-server" / "inbox", aituber_pusher, "inbox"
+                )
+            )
         names: list[str] = []
         for term in terminals:
             name = str(term["name"])

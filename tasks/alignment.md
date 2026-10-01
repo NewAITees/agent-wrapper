@@ -59,6 +59,18 @@ AIは全セッションでこのファイルを参照し、解釈のずれを防
 - **指示に使える表現 / Human Labels**: 承認ブローカー、中央承認キュー、一次受付
 - **曖昧になりやすい表現 / Ambiguous Labels**: orchestrator(作業配分役であり、Brokerそのものではない)
 
+### AITuber push通知 / AITuber Push Notifications
+- **役割 / Responsibility**: 承認要求・セッション終了・inbox成果物の補助イベントを、任意設定されたAITuber受信口へ非同期送信する。
+- **親 / Parent**: agent-wrapper server / Approval Broker
+- **含むもの / Contains**: 環境変数による送信先・token設定、300文字通知本文、inbox mtime監視。
+- **実装 / Implementation**:
+  - Components: `AituberPusher`, `InboxTracker`
+  - Files: `agent_wrapper/aituber_push.py`, `agent_wrapper/approval.py`, `agent_wrapper/server.py`
+  - State: 送信無効(送信先未設定) / 非同期送信、inboxファイルmtimeスナップショット
+  - API: AITuber `POST /event` (`approval_pending` / `session_stopped` / `result_arrived`)
+- **指示に使える表現 / Human Labels**: AITuber通知、push連携
+- **曖昧になりやすい表現 / Ambiguous Labels**: 通知は承認ゲートの代替ではなく、送信失敗も承認・セッション処理へ伝播しない。
+
 ### 実行・承認画面 / Runtime and Approval Screen
 - **役割 / Responsibility**: 人間の最終判断と複数AIセッションの操作状況を、同じ画面で構造的に提示する。
 - **親 / Parent**: 画面・操作 / Frontend
