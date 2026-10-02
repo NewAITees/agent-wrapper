@@ -9,6 +9,7 @@ import os
 import re
 import threading
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import requests
 
@@ -44,11 +45,39 @@ def summarize_approval(action: str, resource: str) -> str:
 _EVENT_TYPES = {"approval_pending", "session_stopped", "result_arrived"}
 
 
+def _validate_push_url(url: str) -> None:
+    """AITuberのtokenを送るため、明示されたloopbackの/eventだけ許可する。"""
+    try:
+        parsed = urlsplit(url)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("AGENT_WRAPPER_AITUBER_URL is invalid") from exc
+    if (
+        url != url.strip()
+        or parsed.scheme.lower() != "http"
+        or hostname is None
+        or hostname.lower() not in {"127.0.0.1", "localhost", "::1"}
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path != "/event"
+        or "?" in url
+        or "#" in url
+        or parsed.netloc.endswith(":")
+        or (port is not None and not 1 <= port <= 65535)
+    ):
+        raise ValueError(
+            "AGENT_WRAPPER_AITUBER_URL must be http to a loopback host at /event"
+        )
+
+
 class AituberPusher:
     """設定された場合だけ通知をdaemon threadから送信する。"""
 
     def __init__(self, url: str | None = None, token: str | None = None) -> None:
         self.url = url if url is not None else os.getenv("AGENT_WRAPPER_AITUBER_URL")
+        if self.url is not None:
+            _validate_push_url(self.url)
         self.token = (
             token if token is not None else os.getenv("AGENT_WRAPPER_AITUBER_TOKEN")
         )
@@ -83,6 +112,7 @@ class AituberPusher:
                 },
                 headers=headers,
                 timeout=3,
+                allow_redirects=False,
             )
             if response.status_code != 202:
                 logger.warning(

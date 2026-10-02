@@ -877,7 +877,9 @@ class RunTestsHttpIntegrationTests(unittest.TestCase):
 
     def post(self, path: str):
         connection = http.client.HTTPConnection(*self.server.server_address, timeout=5)
-        connection.request("POST", path)
+        connection.request(
+            "POST", path, body="{}", headers={"Content-Type": "application/json"}
+        )
         response = connection.getresponse()
         data = json.loads(response.read())
         connection.close()

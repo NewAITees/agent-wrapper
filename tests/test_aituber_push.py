@@ -104,10 +104,47 @@ class AituberPusherTests(unittest.TestCase):
                 pusher.send("approval_pending", "worker", "review")
                 post.assert_not_called()
 
+    def test_empty_configured_url_is_an_explicit_error(self):
+        with self.assertRaises(ValueError):
+            AituberPusher(url="")
+        with (
+            mock.patch.dict(
+                "os.environ", {"AGENT_WRAPPER_AITUBER_URL": ""}, clear=True
+            ),
+            self.assertRaises(ValueError),
+        ):
+            AituberPusher()
+
     def test_rejects_unknown_event_type(self):
         pusher = AituberPusher(url="http://127.0.0.1/event")
         with self.assertRaises(ValueError):
             pusher.send("unknown", "worker", "message")
+
+    def test_accepts_only_http_loopback_event_urls(self):
+        for url in (
+            "http://127.0.0.1/event",
+            "http://localhost:18767/event",
+            "http://[::1]:18767/event",
+        ):
+            with self.subTest(url=url):
+                self.assertEqual(AituberPusher(url=url).url, url)
+
+    def test_rejects_unsafe_push_urls_before_any_request(self):
+        urls = (
+            "https://127.0.0.1/event",
+            "http://example.com/event",
+            "http://127.0.0.1.evil.example/event",
+            "http://user:secret@127.0.0.1/event",
+            "http://127.0.0.1/other",
+            "http://127.0.0.1/event?next=http://evil.example",
+            "http://127.0.0.1/event#fragment",
+            "http://127.0.0.1:99999/event",
+        )
+        with mock.patch("agent_wrapper.aituber_push.requests.post") as post:
+            for url in urls:
+                with self.subTest(url=url), self.assertRaises(ValueError):
+                    AituberPusher(url=url, token="secret-token")
+            post.assert_not_called()
 
     def test_truncates_message_and_adds_token_header(self):
         pusher = AituberPusher(url="http://127.0.0.1/event", token="secret-token")
@@ -121,6 +158,7 @@ class AituberPusherTests(unittest.TestCase):
         self.assertEqual(kwargs["json"]["message"], "x" * 300)
         self.assertEqual(kwargs["headers"], {"X-Aituber-Token": "secret-token"})
         self.assertEqual(kwargs["timeout"], 3)
+        self.assertFalse(kwargs["allow_redirects"])
 
     def test_token_is_not_logged_and_failure_warns_without_raising(self):
         pusher = AituberPusher(url="http://127.0.0.1/event", token="secret-token")

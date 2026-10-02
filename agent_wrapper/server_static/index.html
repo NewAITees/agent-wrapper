@@ -453,7 +453,11 @@
     document.getElementById("pick-folder-btn").onclick = async () => {
       setStatus("フォルダ選択を待機しています...");
       try {
-        const response = await fetch("/pick-folder");
+        const response = await fetch("/pick-folder", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        });
         const data = await response.json();
         if (data.path) {
           selectFolder(data.path);

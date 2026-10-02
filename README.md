@@ -156,7 +156,7 @@ Windowsでは読み取りすら誤ブロックする不安定さに加え、サ�
 
 ## AITuber連携(push)
 
-`AGENT_WRAPPER_AITUBER_URL` にAITuberの受信先(例: `http://127.0.0.1:18767/event`)を設定すると、agent-wrapperは次のイベントをバックグラウンド送信します。未設定の場合は送信しません。任意の `AGENT_WRAPPER_AITUBER_TOKEN` を設定すると `X-Aituber-Token` ヘッダで送信します。
+`AGENT_WRAPPER_AITUBER_URL` にAITuberの受信先(例: `http://127.0.0.1:18767/event`)を設定すると、agent-wrapperは次のイベントをバックグラウンド送信します。未設定の場合は送信しません。URLは `http` と `127.0.0.1` / `localhost` / `[::1]`、パス `/event` の組み合わせに限り、userinfo・query・fragmentは設定エラーになります。任意の `AGENT_WRAPPER_AITUBER_TOKEN` を設定すると `X-Aituber-Token` ヘッダで送信します。
 
 承認要求の内容(コマンドの引数・URL・環境変数・認証情報・ディレクトリ名やユーザー名を含むパス)は送りません。送るのは、操作の種類と、許可パターンに合う安全なコマンド名またはファイル名(パスの末尾の名前のみ)だけです(配信での読み上げによる漏洩防止)。ファイル名そのもの(例: `id_rsa`)は読み上げられうるため、名前自体が機微なファイルを扱うときは注意してください。
 
@@ -167,3 +167,5 @@ Windowsでは読み取りすら誤ブロックする不安定さに加え、サ�
 AITuber側は `POST /event` で `{"type":"...","session":"...","message":"..."}` を受信します。`message` は最大300文字です。受信側で `AITUBER_PUSH_TOKEN` を設定している場合は同じ値を `X-Aituber-Token` で渡す必要があり、成功応答は `202` です。
 
 送信はタイムアウト3秒のバックグラウンド処理です。HTTPエラーや接続失敗はwarningに記録し、承認・セッション管理には影響しません。この通知は承認ゲートの代替ではありません。
+
+agent-wrapper-serverの画面/APIはloopback専用で、API認証トークンは使いません。HTTPは全メソッドでHost・Origin・Sec-Fetch-Siteを検査し、状態変更POSTではContent-Typeも検査します。フォルダ選択の`/pick-folder`はPOSTで呼び出します。Origin等のブラウザヘッダがないGETはcurlやAITuberからの取得用に許可されます。WebSocketもHost・Origin・Sec-Fetch-Siteを検査します。ブラウザの別オリジンからは操作できません。AITuber通知トークンも上記のloopback URLにだけ送信します。

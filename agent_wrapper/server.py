@@ -30,6 +30,7 @@ WebSocket接続・/sendへのHTTP POST)が同じセッションに相乗りす�
 import asyncio
 import http.server
 import json
+import logging
 import os
 import re
 import shutil
@@ -39,13 +40,15 @@ import tkinter
 import webbrowser
 from pathlib import Path
 from tkinter import filedialog
-from typing import Any
+from typing import Any, cast
 from urllib.parse import parse_qs, urlsplit
 
 import requests
 import websockets
 import winpty
-from websockets.asyncio.server import serve
+from websockets.asyncio.server import ServerConnection, serve
+from websockets.datastructures import Headers
+from websockets.http11 import Request, Response
 
 from . import ollama_client, rules
 from .aituber_push import aituber_pusher, poll_inbox
@@ -71,6 +74,89 @@ _STATIC_MODELS: dict[str, dict[str, list[str]]] = {
 }
 
 _STATIC_PAGE_PATH = Path(__file__).parent / "server_static" / "index.html"
+_LOGGER = logging.getLogger(__name__)
+
+
+def _request_boundary_error(
+    host: str | None,
+    port: int,
+    *,
+    origin: str | None = None,
+    http_port: int,
+    fetch_site_values: list[str] | None = None,
+    state_change: bool = False,
+) -> tuple[int, str] | None:
+    """HTTP/WS共通のloopback Hostとブラウザ由来ヘッダを検査する。"""
+    if host is None or host.lower() not in {
+        f"127.0.0.1:{port}",
+        f"localhost:{port}",
+    }:
+        return 403, "request host is not allowed"
+    if not state_change:
+        return None
+    if fetch_site_values and (
+        len(fetch_site_values) != 1
+        or fetch_site_values[0].strip().lower() not in {"same-origin", "none"}
+    ):
+        return 403, "request fetch site is not allowed"
+    if origin is None:
+        return None
+    try:
+        parsed = urlsplit(origin)
+        allowed = (
+            parsed.scheme.lower() == "http"
+            and parsed.hostname is not None
+            and parsed.hostname.lower() in {"127.0.0.1", "localhost"}
+            and parsed.port == http_port
+            and parsed.username is None
+            and parsed.password is None
+            and not parsed.path
+            and not parsed.query
+            and not parsed.fragment
+        )
+    except ValueError:
+        allowed = False
+    if not allowed:
+        return 403, "request origin is not allowed"
+    return None
+
+
+def _ws_process_request(
+    connection: ServerConnection, request: Request
+) -> Response | None:
+    """websockets handshake hook; reject before routing or subscribing sessions."""
+    headers = request.headers
+    local_address = cast(tuple[str, int], connection.local_address)
+    port = local_address[1]
+    rejection = _request_boundary_error(
+        headers.get("Host"),
+        port,
+        origin=headers.get("Origin"),
+        http_port=HTTP_PORT,
+        fetch_site_values=headers.get_all("Sec-Fetch-Site"),
+        state_change=True,
+    )
+    if rejection is None:
+        return None
+    status, reason = rejection
+    body = json.dumps({"error": reason}).encode("utf-8")
+    _LOGGER.warning(
+        "Rejected WebSocket request path=%s reason=%s",
+        urlsplit(request.path).path,
+        reason,
+    )
+    return Response(
+        status,
+        "Forbidden",
+        Headers(
+            [
+                ("Content-Type", "application/json; charset=utf-8"),
+                ("Content-Length", str(len(body))),
+            ]
+        ),
+        body,
+    )
+
 
 # ターミナルの名前(role)に応じて、既定のシステムプロンプトを完全に置き換える形で
 # 差し込む(2026-09-01、ユーザー指示: 「名称に沿ったシステムプロンプトを挿入し、
@@ -985,6 +1071,50 @@ def _make_http_handler(
         def log_message(self, format: str, *args: object) -> None:
             pass
 
+        def send_error(
+            self, code: int, message: str | None = None, explain: str | None = None
+        ) -> None:
+            self._json({"error": "request could not be completed"}, status=code)
+
+        def parse_request(self) -> bool:
+            if not super().parse_request():
+                return False
+            port = cast(tuple[str, int], self.server.server_address)[1]
+            rejection = _request_boundary_error(
+                self.headers.get("Host"),
+                port,
+                origin=self.headers.get("Origin"),
+                http_port=port,
+                fetch_site_values=self.headers.get_all("Sec-Fetch-Site"),
+                state_change=True,
+            )
+            if rejection is None:
+                return True
+            self._reject(*rejection)
+            return False
+
+        def _reject(self, status: int, reason: str) -> None:
+            self.close_connection = True
+            path = urlsplit(self.path).path
+            _LOGGER.warning(
+                "Rejected HTTP request method=%s path=%s reason=%s",
+                self.command,
+                path,
+                reason,
+            )
+            self._json({"error": reason}, status=status)
+
+        def _check_post_boundary(self) -> bool:
+            content_type = self.headers.get("Content-Type", "")
+            if not re.fullmatch(
+                r"\s*application/json\s*(?:;\s*charset\s*=\s*\"?utf-8\"?)?\s*",
+                content_type,
+                flags=re.IGNORECASE,
+            ):
+                self._reject(415, "Content-Type must be application/json")
+                return False
+            return True
+
         def _json(self, payload: object, status: int = 200) -> None:
             body = json.dumps(payload).encode("utf-8")
             self.send_response(status)
@@ -1003,7 +1133,7 @@ def _make_http_handler(
 
         def do_GET(self) -> None:  # noqa: N802
             if self.path == "/pick-folder":
-                self._json({"path": _pick_folder()})
+                self._reject(405, "Method Not Allowed")
                 return
             if self.path.startswith("/models"):
                 harness = (
@@ -1013,8 +1143,8 @@ def _make_http_handler(
                 )
                 try:
                     self._json(models_for(harness))
-                except RuntimeError as e:
-                    self._json({"error": str(e)}, status=500)
+                except RuntimeError:
+                    self._json({"error": "model list is unavailable"}, status=500)
                 return
             if self.path == "/sessions":
                 self._json(
@@ -1053,6 +1183,11 @@ def _make_http_handler(
             super().do_GET()
 
         def do_POST(self) -> None:  # noqa: N802
+            if not self._check_post_boundary():
+                return
+            if self.path == "/pick-folder":
+                self._json({"path": _pick_folder()})
+                return
             if self.path == "/run-tests":
                 if manager.cwd is None:
                     self._json(
@@ -1174,8 +1309,8 @@ def _make_http_handler(
                     else:
                         self._json({"error": f"unknown mode: {mode}"}, status=400)
                         return
-                except Exception as e:
-                    self._json({"error": str(e)}, status=502)
+                except Exception:
+                    self._json({"error": "utility request failed"}, status=502)
                     return
                 self._json(result)
                 return
@@ -1224,7 +1359,7 @@ async def _main_async() -> None:
         target=_serve_http, args=(manager, loop_holder), daemon=True
     ).start()
     webbrowser.open(f"http://127.0.0.1:{HTTP_PORT}/index.html")
-    async with serve(router, "127.0.0.1", WS_PORT):
+    async with serve(router, "127.0.0.1", WS_PORT, process_request=_ws_process_request):
         print(f"WebSocket: ws://127.0.0.1:{WS_PORT}/<pane-name>")
         print(f"HTTP:      http://127.0.0.1:{HTTP_PORT}/index.html")
         await asyncio.Future()
