@@ -136,9 +136,14 @@ ROLE_SYSTEM_PROMPTS: dict[str, str] = {
 # 権限機構(claude wrappedのPreToolUse、raw CLIのallowedTools/disallowedTools、
 # codexのsandbox、opencodeのagent permission)を役割ごとに設定する)。
 # git commit/pushはどの役割にも渡さず、常に人間だけが行える前提にしている。
+# claudeの"effort"はClaudeAgentOptions.effortへそのまま渡す(2026-09-02、コスト
+# 急増インシデントを受けて追加)。SDK既定は"high"(最大の思考コスト)で、この
+# リポジトリはこれまで一度も明示的に下げていなかった。git status/diff程度しか
+# 行わないworker/testerは"low"で十分なため、役割ごとに絞る。未指定時のfallbackも
+# role_permission_forの呼び出し側でなくここで"low"にしておく(明示し忘れを防ぐ)。
 ROLE_PERMISSIONS: dict[str, dict[str, Any]] = {
     "orchestrator": {
-        "claude": {"disallowedTools": ["Edit", "Write", "Bash"]},
+        "claude": {"disallowedTools": ["Edit", "Write", "Bash"], "effort": "medium"},
         "codex": {"sandbox": "read-only"},
         "opencode": {"read": "allow", "edit": "deny", "bash": "deny"},
     },
@@ -146,6 +151,7 @@ ROLE_PERMISSIONS: dict[str, dict[str, Any]] = {
         "claude": {
             "disallowedTools": ["Edit", "Write", "Bash"],
             "allowedTools": ["Edit(**/*.md)", "Write(**/*.md)"],
+            "effort": "medium",
         },
         "codex": {"sandbox": "read-only"},
         "opencode": {"read": "allow", "edit": "ask", "bash": "deny"},
@@ -165,6 +171,7 @@ ROLE_PERMISSIONS: dict[str, dict[str, Any]] = {
                 "Bash(git push *)",
                 "Bash(git merge *)",
             ],
+            "effort": "low",
         },
         "codex": {"sandbox": "workspace-write"},
         "opencode": {
@@ -195,6 +202,7 @@ ROLE_PERMISSIONS: dict[str, dict[str, Any]] = {
                 "Bash(git push *)",
                 "Bash(git merge *)",
             ],
+            "effort": "low",
         },
         "codex": {"sandbox": "workspace-write"},
         "opencode": {
@@ -228,6 +236,7 @@ ROLE_PERMISSIONS: dict[str, dict[str, Any]] = {
                 "Bash(git diff *)",
                 "Bash(git log *)",
             ],
+            "effort": "medium",
         },
         "codex": {"sandbox": "read-only"},
         "opencode": {
@@ -244,7 +253,7 @@ ROLE_PERMISSIONS: dict[str, dict[str, Any]] = {
         },
     },
     "utility": {
-        "claude": {"disallowedTools": ["Edit", "Write", "Bash"]},
+        "claude": {"disallowedTools": ["Edit", "Write", "Bash"], "effort": "low"},
         "codex": {"sandbox": "read-only"},
         "opencode": {"read": "allow", "edit": "deny", "bash": "deny"},
     },

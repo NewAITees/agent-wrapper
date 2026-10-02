@@ -47,6 +47,11 @@ class ApprovalRunnerBase:
     """
 
     _MAX_CONVERSATIONAL_TURNS = 5
+    # 人間へのエスカレーション経路(_confirm_continue_conversation)自体が壊れている
+    # 場合でも歯止めがかかるよう、承認結果を待たずに強制停止する絶対上限
+    # (2026-09-01のコスト急増インシデント: Approval Brokerのセッション不一致により
+    # エスカレーションが機能せず、会話が際限なく伸び続けた再発防止策)。
+    _ABSOLUTE_MAX_TURNS = 30
     PLAN_PROMPT_PREFIX = (
         "作業を始める前に、最初の応答で実装計画だけを提示してください。"
         "含める項目: 目的 / 方針 / 変更範囲(ファイル・モジュール) / 追加依存 / "

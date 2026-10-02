@@ -35,6 +35,7 @@ StopReason = Literal[
     "normal_complete",
     "error",
     "max_conversation_turns",
+    "absolute_turn_limit",
     "terminated",
 ]
 ApprovalCallback = Callable[["HumanResponse"], None]
@@ -70,6 +71,7 @@ _STOP_REASON_LABELS: dict[StopReason, str] = {
     "normal_complete": "正常完了",
     "error": "エラー",
     "max_conversation_turns": "最大会話ターン到達",
+    "absolute_turn_limit": "絶対ターン上限到達(強制停止)",
     "terminated": "手動停止",
 }
 
@@ -157,6 +159,7 @@ class SharedState:
                 if self.status != "stopped":
                     self.status = "waiting_human" if pending else "running"
 
+        pending_before = {r.request_id for r in self.broker.pending(self.session_id)}
         request = self.broker.submit(
             ApprovalRequestInput(
                 session_id=self.session_id,
@@ -170,6 +173,10 @@ class SharedState:
             ),
             callback=on_decision,
         )
+        if request.request_id in pending_before:
+            self.append_log(
+                f"(重複した承認要求を検知: 既存の未解決要求へ統合しました kind={kind})"
+            )
         with self.lock:
             self.status = "waiting_human"
         return request

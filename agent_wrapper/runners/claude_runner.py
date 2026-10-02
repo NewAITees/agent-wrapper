@@ -66,6 +66,9 @@ class ClaudeRunner(ApprovalRunnerBase):
         # allowed_toolsは一致した呼び出しをcan_use_toolより先に自動許可するため、
         # role設定をSDKへ直接渡さない。roleの明示拒否はPreToolUseで行い、
         # 通過した呼び出しは必ずcan_use_toolの3層ゲートへ送る。
+        # effortは役割ごとの権限設定(server.py ROLE_PERMISSIONS)から渡す。
+        # SDK既定はeffort=None(=高負荷なadaptive thinking)で、コスト急増インシデント
+        # (2026-09-01)の原因の一つだったため、未指定時も"low"へ明示的に倒す。
         options = ClaudeAgentOptions(
             permission_mode="default",
             cwd=self.cwd,
@@ -78,6 +81,7 @@ class ClaudeRunner(ApprovalRunnerBase):
             setting_sources=["project"],
             allowed_tools=[],
             disallowed_tools=[],
+            effort=self.permission.get("effort", "low"),  # type: ignore[arg-type]
         )
         async with ClaudeSDKClient(options=options) as client:
             await client.query(self.initial_prompt)
@@ -85,8 +89,19 @@ class ClaudeRunner(ApprovalRunnerBase):
 
     async def _converse(self, client: ClaudeSDKClient) -> None:
         turns = 0
+        total_turns = 0
         plan_approved = self.state.snapshot()["approved_plan"] is not None
         while True:
+            if total_turns >= self._ABSOLUTE_MAX_TURNS:
+                self.state.append_log(
+                    f"(絶対ターン上限{self._ABSOLUTE_MAX_TURNS}に達したため、"
+                    "承認結果を待たずセッションを強制停止します)"
+                )
+                self.state.set_stopped(
+                    "absolute_turn_limit",
+                    f"絶対ターン上限({self._ABSOLUTE_MAX_TURNS})に達しました",
+                )
+                return
             last_text = self._read_turn(await self._collect_turn(client))
             if not last_text:
                 return
@@ -111,6 +126,7 @@ class ClaudeRunner(ApprovalRunnerBase):
             self.state.append_log(f"[人間応答送信] {reply}")
             await client.query(reply)
             turns += 1
+            total_turns += 1
 
     async def _collect_turn(self, client: ClaudeSDKClient) -> list[object]:
         messages: list[object] = []

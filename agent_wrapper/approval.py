@@ -113,22 +113,52 @@ class ApprovalBroker:
         request: ApprovalRequestInput,
         callback: DecisionCallback | None = None,
     ) -> ApprovalRequest:
-        created = ApprovalRequest(
-            request_id=str(uuid.uuid4()),
-            session_id=request.session_id,
-            harness=request.harness,
-            kind=request.kind,
-            action=request.action,
-            resource=request.resource,
-            reason=request.reason,
-            created_at=datetime.datetime.now(datetime.UTC),
-            risk_level=request.risk_level,
-            plan_id=request.plan_id,
-            expires_at=request.expires_at,
-            metadata=dict(request.metadata),
-            callback=callback or (lambda decision: None),
-        )
+        """未解決の要求を積む。session_id/kind/action/resourceが完全一致する
+        pending要求が既にあれば新規発行せず既存へ統合する(2026-09-02、コスト
+        急増インシデントの再発防止: 承認が正しく届かないバグと重なると、同一
+        問い合わせが際限なく積み上がりダッシュボードを埋め、承認AIや人間が
+        古い要求を無自覚に承認し続けて会話が伸び続ける温床になっていた)。
+        resourceまで一致を要求するのは、同一セッション内で並行実行される別々の
+        ツール呼び出し(例: 異なるBashコマンド)を誤って同一視して片方の判断を
+        もう片方へ横流ししないため。
+        """
         with self._lock:
+            for existing in self._requests:
+                if (
+                    existing.status == "pending"
+                    and existing.session_id == request.session_id
+                    and existing.kind == request.kind
+                    and existing.action == request.action
+                    and existing.resource == request.resource
+                ):
+                    if callback is not None:
+                        previous_callback = existing.callback
+
+                        def combined(
+                            decision: ApprovalDecision,
+                            _prev: DecisionCallback = previous_callback,
+                            _new: DecisionCallback = callback,
+                        ) -> None:
+                            _prev(decision)
+                            _new(decision)
+
+                        existing.callback = combined
+                    return existing
+            created = ApprovalRequest(
+                request_id=str(uuid.uuid4()),
+                session_id=request.session_id,
+                harness=request.harness,
+                kind=request.kind,
+                action=request.action,
+                resource=request.resource,
+                reason=request.reason,
+                created_at=datetime.datetime.now(datetime.UTC),
+                risk_level=request.risk_level,
+                plan_id=request.plan_id,
+                expires_at=request.expires_at,
+                metadata=dict(request.metadata),
+                callback=callback or (lambda decision: None),
+            )
             self._requests.append(created)
         return created
 
