@@ -15,6 +15,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal
 
+from .aituber_push import aituber_pusher, summarize_approval
+
 ApprovalKind = Literal["permission", "specification_question"]
 ApprovalAction = Literal["approve", "explain", "deny"]
 ApprovalStatus = Literal["pending", "resolved", "expired", "cancelled"]
@@ -160,6 +162,11 @@ class ApprovalBroker:
                 callback=callback or (lambda decision: None),
             )
             self._requests.append(created)
+        aituber_pusher.send(
+            "approval_pending",
+            created.session_id,
+            summarize_approval(created.action, created.resource),
+        )
         return created
 
     def pending(self, session_id: str | None = None) -> list[ApprovalRequest]:

@@ -3,6 +3,13 @@
 2. 完了したら `[x]` にする
 3. セクションが全て完了したら、セクションごと削除してよい
 
+## spec: AITuberへのpush通知
+- [x] `AituberPusher`の非同期送信と単体テストを追加する
+- [x] Approval Broker新規要求・セッション終了・inbox更新の通知フックを追加する
+- [x] READMEに環境変数・イベント・受信仕様・失敗時挙動を記載する
+- [x] 指定されたpytest・ruff・mypyを実行し差分をレビューする
+- [x] 完了結果と未確認事項を報告する(コミットしない)
+
 ## fix: コミット前安全レビュー指摘 (2026-09-01、承認済み)
 - [x] Claude role制限が`allowed_tools`経由でApproval Brokerを迂回しないようPreToolUseへ統合する
 - [x] planner/reviewerのMarkdown例外と、それ以外の書き込み拒否を回帰テストで固定する
@@ -92,3 +99,10 @@
 - [ ] (上流バグ) codexのサンドボックス昇格承認がmcp経由でクライアントに届かない問題(openai/codex#21982系統)の修正を追い、修正されたら--codex-sandboxの既定(danger-full-access)を見直す
 - [ ] (将来リスク) codexのelicitation応答形式が将来MCP標準に修正された場合の再確認(CodexRunner._elicit_resultは両対応済みだがcodex更新時に要確認)
 - 背景: --dangerously-skip-permissions を使うとClaude自身の権限確認が無効化され本末転倒、外すとヘッドレスモードはstdinを待たずプロセスが終了することを実機検証で確認済み。詳細はdocs/agent_wrapper_sdk_integration_plan.mdを参照。
+
+## fix: AITuber承認通知の機密除外
+- [x] `summarize_approval` のテストを先に追加し、機密入力を含めて失敗を確認する
+- [x] push通知の要約関数を実装し、Approval Brokerから使用する
+- [x] READMEに承認通知の内容制限とresult_arrivedの読み上げ注意を追記する
+- [x] 指定pytest・ruff・mypyを実行して差分をレビューする
+- [x] 完了結果と未確認事項を報告する（コミットしない）
