@@ -1,4 +1,5 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import datetime
 import http.client
 import http.server
@@ -7,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -416,6 +418,36 @@ class SessionTests(unittest.TestCase):
 
         self.assertEqual(session.proc.written, ["hello\r"])
 
+    def test_concurrent_stop_notifications_are_sent_once(self):
+        session = _make_session()
+        original_value = session._stop_notified
+
+        def get_notified(_self):
+            value = original_value_holder[0]
+            time.sleep(0.01)
+            return value
+
+        original_value_holder = [original_value]
+        with mock.patch.object(
+            type(session),
+            "_stop_notified",
+            new=property(
+                get_notified,
+                lambda _self, value: original_value_holder.__setitem__(0, value),
+            ),
+            create=True,
+        ):
+            self._assert_concurrent_stop_notification_once(session)
+
+    def _assert_concurrent_stop_notification_once(self, session):
+        with mock.patch("agent_wrapper.server.aituber_pusher.send") as send:
+            with ThreadPoolExecutor(max_workers=32) as executor:
+                futures = [executor.submit(session._notify_stopped) for _ in range(32)]
+                for future in futures:
+                    future.result()
+
+        send.assert_called_once_with("session_stopped", "worker", "session stopped")
+
 
 class SessionManagerStopOneTests(unittest.IsolatedAsyncioTestCase):
     async def test_stop_one_terminates_and_removes_session(self):
@@ -453,6 +485,98 @@ class SessionManagerStopOneTests(unittest.IsolatedAsyncioTestCase):
         await manager.stop_all()
 
         self.assertEqual(manager.sessions, {})
+
+    async def test_stop_all_waits_for_inbox_task_cancellation(self):
+        manager = SessionManager()
+        started = asyncio.Event()
+        finished = asyncio.Event()
+
+        async def wait_for_cancel(*_args):
+            started.set()
+            try:
+                await asyncio.Future()
+            finally:
+                await asyncio.sleep(0)
+                finished.set()
+
+        with (
+            mock.patch("agent_wrapper.server.aituber_pusher", mock.Mock(enabled=True)),
+            mock.patch("agent_wrapper.server.poll_inbox", wait_for_cancel),
+            mock.patch("agent_wrapper.server.remember_folder"),
+        ):
+            await manager.start(".", [])
+            await started.wait()
+            old_task = manager._inbox_task
+
+            await manager.stop_all()
+
+        self.assertIsNotNone(old_task)
+        self.assertTrue(old_task.done())
+        self.assertTrue(finished.is_set())
+
+    async def test_stop_all_propagates_its_own_cancellation(self):
+        manager = SessionManager()
+        started = asyncio.Event()
+        cancellation_started = asyncio.Event()
+        finish_cleanup = asyncio.Event()
+
+        async def wait_for_cancel(*_args):
+            started.set()
+            try:
+                await asyncio.Future()
+            finally:
+                cancellation_started.set()
+                await finish_cleanup.wait()
+
+        with (
+            mock.patch("agent_wrapper.server.aituber_pusher", mock.Mock(enabled=True)),
+            mock.patch("agent_wrapper.server.poll_inbox", wait_for_cancel),
+            mock.patch("agent_wrapper.server.remember_folder"),
+        ):
+            await manager.start(".", [])
+            await started.wait()
+            stop_task = asyncio.create_task(manager.stop_all())
+            await cancellation_started.wait()
+            stop_task.cancel()
+            finish_cleanup.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await stop_task
+
+    async def test_restart_waits_for_previous_inbox_task(self):
+        manager = SessionManager()
+        started_count = 0
+        first_finished = asyncio.Event()
+        first_started = asyncio.Event()
+        all_started = asyncio.Event()
+
+        async def wait_for_cancel(*_args):
+            nonlocal started_count
+            started_count += 1
+            if started_count == 1:
+                first_started.set()
+            elif started_count == 2:
+                all_started.set()
+            try:
+                await asyncio.Future()
+            finally:
+                if started_count == 1:
+                    first_finished.set()
+
+        with (
+            mock.patch("agent_wrapper.server.aituber_pusher", mock.Mock(enabled=True)),
+            mock.patch("agent_wrapper.server.poll_inbox", wait_for_cancel),
+            mock.patch("agent_wrapper.server.remember_folder"),
+        ):
+            await manager.start(".", [])
+            await first_started.wait()
+            old_task = manager._inbox_task
+            await manager.start(".", [])
+            await all_started.wait()
+
+        self.assertIsNotNone(old_task)
+        self.assertTrue(old_task.done())
+        self.assertTrue(first_finished.is_set())
+        await manager.stop_all()
 
     async def test_stop_one_cancels_opencode_internal_session_approval(self):
         manager = SessionManager()
@@ -502,6 +626,42 @@ class SessionManagerStopOneTests(unittest.IsolatedAsyncioTestCase):
 
 
 class WrappedSessionTests(unittest.TestCase):
+    def test_concurrent_stop_notifications_are_sent_once(self):
+        session = WrappedSession(
+            "worker",
+            "claude",
+            "anthropic",
+            "sonnet",
+            ".",
+            SessionManager().shared_state("worker", "claude"),
+        )
+        original_value = session._stop_notified
+        original_value_holder = [original_value]
+
+        def get_notified(_self):
+            value = original_value_holder[0]
+            time.sleep(0.01)
+            return value
+
+        with mock.patch.object(
+            type(session),
+            "_stop_notified",
+            new=property(
+                get_notified,
+                lambda _self, value: original_value_holder.__setitem__(0, value),
+            ),
+            create=True,
+        ):
+            with mock.patch("agent_wrapper.server.aituber_pusher.send") as send:
+                with ThreadPoolExecutor(max_workers=32) as executor:
+                    futures = [
+                        executor.submit(session._notify_stopped) for _ in range(32)
+                    ]
+                    for future in futures:
+                        future.result()
+
+            send.assert_called_once_with("session_stopped", "worker", "session stopped")
+
     def test_first_submitted_line_starts_claude_runner_with_broker_state(self):
         state = SessionManager().shared_state("worker", "claude")
         runner = mock.Mock()

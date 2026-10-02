@@ -640,6 +640,7 @@ class Session:
         self.subscribers: set[object] = set()
         self.scrollback = bytearray()
         self._stop_notified = False
+        self._stop_notified_lock = threading.Lock()
 
     def write(self, text: str) -> None:
         self.proc.write(text)
@@ -670,9 +671,11 @@ class Session:
         self._notify_stopped()
 
     def _notify_stopped(self) -> None:
-        if not self._stop_notified:
+        with self._stop_notified_lock:
+            if self._stop_notified:
+                return
             self._stop_notified = True
-            aituber_pusher.send("session_stopped", self.name, "session stopped")
+        aituber_pusher.send("session_stopped", self.name, "session stopped")
 
     async def broadcast_loop(self) -> None:
         loop = asyncio.get_running_loop()
@@ -720,6 +723,7 @@ class WrappedSession:
         self._runner: ClaudeRunner | CodexRunner | None = None
         self._terminated = False
         self._stop_notified = False
+        self._stop_notified_lock = threading.Lock()
         self.state.append_log(
             "[wrapped] タスクを入力してEnterを押すと、承認Broker経由で開始します。"
         )
@@ -783,9 +787,11 @@ class WrappedSession:
         self._notify_stopped()
 
     def _notify_stopped(self) -> None:
-        if not self._stop_notified:
+        with self._stop_notified_lock:
+            if self._stop_notified:
+                return
             self._stop_notified = True
-            aituber_pusher.send("session_stopped", self.name, "session stopped")
+        aituber_pusher.send("session_stopped", self.name, "session stopped")
 
     async def broadcast_loop(self) -> None:
         sent = ""
@@ -886,8 +892,17 @@ class SessionManager:
             await self.stop_one(name)
         self.approval_broker.cancel_all()
         if self._inbox_task is not None:
-            self._inbox_task.cancel()
+            task = self._inbox_task
             self._inbox_task = None
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    raise
+                if not task.cancelled():
+                    raise
 
     async def stop_one(self, name: str) -> bool:
         """1セッションだけを停止・破棄する(全体を作り直さずに済ませるため)。"""
