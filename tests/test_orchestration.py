@@ -271,3 +271,11 @@ class RealWrappedSessionTests(unittest.IsolatedAsyncioTestCase):
         manager, _ = self._manager_with_running_worker()
         result = await send_to_session(manager, "orchestrator", "worker", "追加指示")
         self.assertTrue(result.startswith("Error"))
+
+
+class OrchestratorInstructionGuidanceTests(unittest.TestCase):
+    def test_prompt_tells_orchestrator_not_to_embed_install_or_delete_commands(self):
+        prompt = ROLE_SYSTEM_PROMPTS["orchestrator"]
+        self.assertIn("指示文", prompt)
+        self.assertIn("コマンドの例", prompt)
+        self.assertIn("書かない", prompt)
