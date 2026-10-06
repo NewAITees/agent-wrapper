@@ -42,6 +42,18 @@ AIは全セッションでこのファイルを参照し、解釈のずれを防
 - **NG解釈**: orchestrator LLM自身にOS権限や承認APIを直接持たせ、自由文だけで無制限に許可させる。
 - **OK解釈**: orchestratorは作業配分と説明整理を担当し、最終的な許可能力はポリシー制約付きApproval Brokerだけが持つ。
 
+### セッション間dispatch / Session Dispatch
+- **役割 / Responsibility**: Claude wrappedのorchestratorが、各セッションの状態を確認し、まだ最初の入力を受けていないwrappedセッションへ指示を送り、各セッションの出力を読む。
+- **親 / Parent**: マルチセッション作業 / Multi-session Work
+- **含むもの / Contains**: セッション一覧、指示送信、出力末尾の読取。orchestrator自身への操作は禁止。
+- **実装 / Implementation**:
+  - Components: `orchestration` SDK MCP server、`ClaudeRunner`、`SessionManager`
+  - Files: `agent_wrapper/orchestration.py`, `agent_wrapper/server.py`, `agent_wrapper/runners/claude_runner.py`, `agent_wrapper/runners/tool_describe.py`
+  - State: wrappedはrunner未起動時のみ入力可能。raw-ptyはaliveなら端末入力可能。
+  - API: `list_sessions`, `send_to_session`, `read_session_output`
+- **指示に使える表現 / Human Labels**: orchestratorからworkerへ送る、セッション状態を確認、出力を見る
+- **曖昧になりやすい表現 / Ambiguous Labels**: 「未起動」はharnessプロセス未起動ではなく、wrappedセッションで初回task入力前を指す。
+
 ### permission request / specification question
 - **意味**: `permission request`は具体的な副作用操作の実行可否、`specification question`は仕様・優先順位・スコープを決める意味判断。別のイベント種別・承認規則で扱う。
 - **NG解釈**: どちらも画面上の`y/n`らしい文字列として同じ自動承認ロジックへ渡す。

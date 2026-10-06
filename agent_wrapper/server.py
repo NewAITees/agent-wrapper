@@ -49,11 +49,13 @@ import winpty
 from websockets.asyncio.server import ServerConnection, serve
 from websockets.datastructures import Headers
 from websockets.http11 import Request, Response
+from claude_agent_sdk.types import McpServerConfig
 
 from . import ollama_client, rules
 from .aituber_push import aituber_pusher, poll_inbox
 from .approval import ApprovalBroker, ApprovalDecision
 from .approval_adapters import OpenCodePermissionAdapter
+from .orchestration import create_orchestration_server
 from .runners.claude_runner import ClaudeRunner
 from .runners.codex_runner import CodexRunner
 from .wrapper import SharedState
@@ -174,6 +176,8 @@ ROLE_SYSTEM_PROMPTS: dict[str, str] = {
         "3. 不合格なら、該当セッション(worker/tester)へ`/send`相当の手段で修正指示を送り、1に戻す\n"
         "4. 合格なら、人間に完了報告とコミット可否の確認を求める(あなたはcommit/pushしない)\n"
         "(delegate skillの方針: 完了報告を鵜呑みにせず、実際の差分・テスト結果を見てから次を判断する)"
+        "\n利用できるセッション連携ツール: list_sessions / send_to_session / read_session_output。"
+        "まずlist_sessionsで各セッションの状態を確認し、未起動で入力を受け付けられる対象にだけ最初の指示を送ってください。"
     ),
     "planner": (
         "あなたはこのマルチセッション作業におけるplannerです。"
@@ -707,6 +711,8 @@ def build_argv(
 class Session:
     """1つのターミナルに対応する、/startで生成される常駐pty。"""
 
+    mode = "raw-pty"
+
     _SCROLLBACK_LIMIT = 200_000
 
     def __init__(
@@ -788,6 +794,8 @@ class Session:
 class WrappedSession:
     """SDK/MCP runnerをWeb terminalへ接続する承認Broker対応セッション。"""
 
+    mode = "wrapped"
+
     def __init__(
         self,
         name: str,
@@ -796,6 +804,7 @@ class WrappedSession:
         model: str,
         cwd: str,
         state: SharedState,
+        mcp_servers: dict[str, McpServerConfig] | None = None,
     ) -> None:
         self.name = name
         self.harness = harness
@@ -803,6 +812,7 @@ class WrappedSession:
         self.model = model
         self.cwd = cwd
         self.state = state
+        self.mcp_servers = mcp_servers
         self.subscribers: set[object] = set()
         self.scrollback = bytearray()
         self._input = ""
@@ -836,11 +846,22 @@ class WrappedSession:
     def _start(self, prompt: str) -> None:
         self.state.append_log(f"[prompt] {prompt}")
         full_prompt = f"{system_prompt_for(self.name)}\n\n{prompt}"
-        runner_type = ClaudeRunner if self.harness == "claude" else CodexRunner
         permission = role_permission_for(self.name, self.harness)
-        self._runner = runner_type(
-            prompt=full_prompt, cwd=self.cwd, state=self.state, permission=permission
-        )
+        if self.harness == "claude":
+            self._runner = ClaudeRunner(
+                prompt=full_prompt,
+                cwd=self.cwd,
+                state=self.state,
+                permission=permission,
+                mcp_servers=self.mcp_servers,
+            )
+        else:
+            self._runner = CodexRunner(
+                prompt=full_prompt,
+                cwd=self.cwd,
+                state=self.state,
+                permission=permission,
+            )
         self._runner.start()
 
     def output_text(self, tail: int | None = None) -> str:
@@ -1025,6 +1046,11 @@ class SessionManager:
             mode = str(term.get("mode", default_mode))
             session: Session | WrappedSession
             if mode == "wrapped" and harness in {"claude", "codex"}:
+                mcp_servers: dict[str, McpServerConfig] | None = None
+                if name == "orchestrator" and harness == "claude":
+                    mcp_servers = {
+                        "orchestration": create_orchestration_server(self, name)
+                    }
                 session = WrappedSession(
                     name,
                     harness,
@@ -1032,6 +1058,7 @@ class SessionManager:
                     model,
                     cwd,
                     self.shared_state(name, harness),
+                    mcp_servers,
                 )
             elif mode == "raw-pty":
                 if harness == "opencode":

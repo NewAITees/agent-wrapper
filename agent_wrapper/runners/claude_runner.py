@@ -33,6 +33,7 @@ claude-agent-sdk経由で実際のClaude Codeを動かすrunner。
 """
 
 import fnmatch
+from typing import Any
 
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, HookMatcher
 from claude_agent_sdk.types import (
@@ -45,13 +46,22 @@ from claude_agent_sdk.types import (
     TextBlock,
     ToolPermissionContext,
     ToolUseBlock,
+    McpServerConfig,
 )
 
 from .. import rules
 from .base import ApprovalRunnerBase
+from ..wrapper import Notifier, SharedState
 from .tool_describe import GATED_TOOLS, describe_tool_call
 
-_GATED_MATCHER = "|".join(sorted(GATED_TOOLS))
+_ORCHESTRATION_TOOLS = frozenset(
+    {
+        "mcp__orchestration__list_sessions",
+        "mcp__orchestration__send_to_session",
+        "mcp__orchestration__read_session_output",
+    }
+)
+_GATED_MATCHER = "|".join(sorted(GATED_TOOLS | _ORCHESTRATION_TOOLS))
 
 
 class ClaudeRunner(ApprovalRunnerBase):
@@ -61,6 +71,19 @@ class ClaudeRunner(ApprovalRunnerBase):
     rules.py(検知ルール), ollama_client.py(一次判定/説明),
     tool_describe.py(ツール呼び出しの文字列化)。
     """
+
+    def __init__(
+        self,
+        prompt: str,
+        cwd: str,
+        state: SharedState,
+        ollama_model: str = "gemma4:e4b",
+        notifier: Notifier | None = None,
+        permission: dict[str, Any] | None = None,
+        mcp_servers: dict[str, McpServerConfig] | None = None,
+    ) -> None:
+        super().__init__(prompt, cwd, state, ollama_model, notifier, permission)
+        self.mcp_servers = mcp_servers
 
     async def _run_async(self) -> None:
         # allowed_toolsは一致した呼び出しをcan_use_toolより先に自動許可するため、
@@ -82,6 +105,7 @@ class ClaudeRunner(ApprovalRunnerBase):
             allowed_tools=[],
             disallowed_tools=[],
             effort=self.permission.get("effort", "low"),  # type: ignore[arg-type]
+            mcp_servers=self.mcp_servers or {},
         )
         async with ClaudeSDKClient(options=options) as client:
             await client.query(self.initial_prompt)

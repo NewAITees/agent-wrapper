@@ -3,6 +3,14 @@
 2. 完了したら `[x]` にする
 3. セクションが全て完了したら、セクションごと削除してよい
 
+## spec: orchestrator MCP dispatch（2026-10-06、承認済み）
+- [x] Red: 偽SessionManagerによるlist/send/read境界テスト、ClaudeRunnerのMCP受け渡しテスト、system prompt確認を追加して失敗を確認する
+- [x] orchestration.pyにセッション操作関数と3つのSDK MCPツールを実装し、自己送信・入力済wrapped・文字数等を制約する
+- [x] orchestratorのclaude wrappedセッションにだけMCPサーバーを渡し、MCPツール呼び出しを既存3層ゲートと説明関数へ接続する
+- [x] orchestratorのsystem promptにツールと未起動セッションへの初回指示ルールを追記する
+- [x] 指定されたテストだけ実行し、ruff check/mypy、差分・行番号を確認して完了報告する（コミット・pushしない）
+- 検証記録: 対象テストの全実行は164 passed / 11 failed（既存テストがWindows `%TEMP%` のACLでアクセス拒否）。ACL依存クラスを除いた再実行は153 passed / 23 deselected / 81 subtests passed。`ruff check`、`mypy agent_wrapper`、`git diff --check`は成功。
+
 ## spec: AITuberへのpush通知
 - [x] `AituberPusher`の非同期送信と単体テストを追加する
 - [x] Approval Broker新規要求・セッション終了・inbox更新の通知フックを追加する
