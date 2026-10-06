@@ -143,7 +143,7 @@ class OrchestrationToolTests(unittest.IsolatedAsyncioTestCase):
             4000,
         )
 
-    async def test_sdk_server_exposes_three_tools(self):
+    async def test_sdk_server_exposes_all_orchestration_tools(self):
         with mock.patch(
             "agent_wrapper.orchestration.create_sdk_mcp_server",
             side_effect=lambda name, tools: {"name": name, "tools": tools},
@@ -152,7 +152,13 @@ class OrchestrationToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(config["name"], "orchestration")
         self.assertEqual(
             {item.name for item in config["tools"]},
-            {"list_sessions", "send_to_session", "read_session_output"},
+            {
+                "list_sessions",
+                "send_to_session",
+                "read_session_output",
+                "list_pending_approvals",
+                "respond_to_approval",
+            },
         )
 
 

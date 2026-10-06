@@ -11,6 +11,13 @@
 - [x] 指定されたテストだけ実行し、ruff check/mypy、差分・行番号を確認して完了報告する（コミット・pushしない）
 - 検証記録: 対象テストの全実行は164 passed / 11 failed（既存テストがWindows `%TEMP%` のACLでアクセス拒否）。ACL依存クラスを除いた再実行は153 passed / 23 deselected / 81 subtests passed。`ruff check`、`mypy agent_wrapper`、`git diff --check`は成功。
 
+## spec: orchestratorによる安全な承認一次受付（2026-10-06、承認済み）
+- [ ] 実物のApprovalBroker/SessionManagerを使う規則テストを先に追加し、未実装で失敗させる
+- [ ] orchestration MCPへpending一覧と制約付き応答を追加し、監査ログを記録する
+- [ ] 2ツールを3層ゲート・人間向け説明・orchestrator限定配線へ接続する
+- [ ] orchestrator system promptへ自律承認可能範囲と人間エスカレーション規則を追記する
+- [ ] 指定された全テスト・ruff format/check・mypyを実行し差分をレビューする（コミット・pushなし）
+
 ## spec: AITuberへのpush通知
 - [x] `AituberPusher`の非同期送信と単体テストを追加する
 - [x] Approval Broker新規要求・セッション終了・inbox更新の通知フックを追加する
@@ -114,3 +121,4 @@
 - [x] READMEに承認通知の内容制限とresult_arrivedの読み上げ注意を追記する
 - [x] 指定pytest・ruff・mypyを実行して差分をレビューする
 - [x] 完了結果と未確認事項を報告する（コミットしない）
+- 停止条件: 既存tests/test_orchestration.py::test_sdk_server_exposes_three_toolsはMCPツールが3件だけであることを厳密に要求しており、新規2ツール追加と両立しない。既存テスト変更は禁止のため、修正可否の判断が必要。

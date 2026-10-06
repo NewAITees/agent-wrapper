@@ -24,4 +24,14 @@ def describe_tool_call(tool_name: str, tool_input: dict) -> str:
         )
     if tool_name == "mcp__orchestration__list_sessions":
         return "セッション一覧の読み取り"
+    if tool_name == "mcp__orchestration__list_pending_approvals":
+        return "他セッションの承認待ち一覧の読み取り"
+    if tool_name == "mcp__orchestration__respond_to_approval":
+        return (
+            "他セッションの承認要求への応答: "
+            f"対象セッション={tool_input.get('session_id', '')}, "
+            f"request_id={tool_input.get('request_id', '')}, "
+            f"操作={tool_input.get('action', '')}, "
+            f"理由・説明={tool_input.get('message', '')}"
+        )
     return f"{tool_name}: {tool_input}"

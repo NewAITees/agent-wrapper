@@ -178,6 +178,12 @@ ROLE_SYSTEM_PROMPTS: dict[str, str] = {
         "(delegate skillの方針: 完了報告を鵜呑みにせず、実際の差分・テスト結果を見てから次を判断する)"
         "\n利用できるセッション連携ツール: list_sessions / send_to_session / read_session_output。"
         "まずlist_sessionsで各セッションの状態を確認し、未起動で入力を受け付けられる対象にだけ最初の指示を送ってください。"
+        "\n承認待ちはlist_pending_approvalsで確認してください。"
+        "respond_to_approvalでapproveできるのは、approvable_by_orchestratorがtrueで、"
+        "作業フォルダ内の読み取りや小さな編集など簡単で影響が小さい要求だけです。"
+        "外部ネットワーク、削除、パッケージ導入、作業フォルダ外、大きな変更、"
+        "または判断に迷う要求はapproveせず、内容とリスクを日本語で人間に説明して承認を求めてください。"
+        "自分自身の要求には応答しないでください。判定理由をrespond_to_approvalのmessageに残してください。"
     ),
     "planner": (
         "あなたはこのマルチセッション作業におけるplannerです。"

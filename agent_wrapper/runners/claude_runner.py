@@ -59,6 +59,8 @@ _ORCHESTRATION_TOOLS = frozenset(
         "mcp__orchestration__list_sessions",
         "mcp__orchestration__send_to_session",
         "mcp__orchestration__read_session_output",
+        "mcp__orchestration__list_pending_approvals",
+        "mcp__orchestration__respond_to_approval",
     }
 )
 _GATED_MATCHER = "|".join(sorted(GATED_TOOLS | _ORCHESTRATION_TOOLS))
