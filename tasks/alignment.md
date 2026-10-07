@@ -5,6 +5,35 @@ AIは全セッションでこのファイルを参照し、解釈のずれを防
 
 ---
 
+## 全体地図 / Project Overview
+
+```text
+マルチセッション作業 / Multi-session Work
+├─ 画面・操作 / Frontend
+│  ├─ 端末入力 / Terminal Input
+│  └─ 承認操作 / Approval Controls
+├─ 処理・データ / Backend
+│  ├─ セッション連携 / Session Dispatch
+│  ├─ 配信者の追加指示 / Streamer Instructions
+│  └─ 承認ブローカー / Approval Broker
+└─ 実行環境 / Infrastructure
+   ├─ harness実行 / Harness Execution
+   └─ API認証 / API Authentication
+```
+
+### 配信者の追加指示 / Streamer Instructions
+- **対象 / Target**: Claude wrappedの稼働中入力。idle待機は名前がorchestratorの場合のみ。
+- **実装 / Implementation**: `input_queue.py`のFIFO、`server.py`のWrappedSession、`claude_runner.py`のターン境界配信。
+- **契約 / Contract**: 最大5件・4000文字、承認待ち中は保留。初回taskは従来どおり。停止・終了時に残件を破棄し同じセッションは再利用しない。
+- **API / API**: POST `/send/{name}`。初回started、追加queuedと位置、拒否409。
+- **指示に使える表現 / Human Labels**: 配信者の指示、追加指示、入力キュー。
+- **注意 / Boundary**: MCPのsend_to_sessionは未起動対象への初回dispatchのまま。Codexには入力キューなし、raw-ptyは従来の端末入力。
+
+### API認証 / API Authentication
+- **実装 / Implementation**: `server.py`。非空の`AGENT_WRAPPER_API_TOKEN`で対象POSTにBearer認証を要求。
+- **対象 / Target**: `/send/*`と`/approvals/*/respond`のみ。GETとその他APIは対象外。
+- **契約 / Contract**: HTTP境界検査は引き続き独立して適用。AITuberランチャー連携は未確認（環境依存）。
+
 ## Terms（事前定義）
 
 ### harness

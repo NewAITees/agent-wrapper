@@ -50,6 +50,7 @@ from claude_agent_sdk.types import (
 )
 
 from .. import rules
+from ..input_queue import WrappedInputQueue
 from .base import ApprovalRunnerBase
 from ..wrapper import Notifier, SharedState
 from .tool_describe import GATED_TOOLS, describe_tool_call
@@ -83,9 +84,25 @@ class ClaudeRunner(ApprovalRunnerBase):
         notifier: Notifier | None = None,
         permission: dict[str, Any] | None = None,
         mcp_servers: dict[str, McpServerConfig] | None = None,
+        input_queue: WrappedInputQueue | None = None,
+        idle_wait_seconds: float = 0,
     ) -> None:
         super().__init__(prompt, cwd, state, ollama_model, notifier, permission)
         self.mcp_servers = mcp_servers
+        self.input_queue = input_queue
+        self.idle_wait_seconds = idle_wait_seconds
+
+    async def _human_instruction(self, *, wait: bool = False) -> str | None:
+        if self.input_queue is None or self._stop_requested.is_set():
+            return None
+        text = self.input_queue.take_nowait()
+        if text is None and wait and self.idle_wait_seconds > 0:
+            self.state.append_log("[入力待機] 配信者の追加指示を待っています")
+            text = await self.input_queue.wait(self.idle_wait_seconds)
+        if text is None or self._stop_requested.is_set():
+            return None
+        self.state.append_log(f"[人間指示] {text}")
+        return f"[配信者の指示] {text}"
 
     async def _run_async(self) -> None:
         # allowed_toolsは一致した呼び出しをcan_use_toolより先に自動許可するため、
@@ -109,9 +126,22 @@ class ClaudeRunner(ApprovalRunnerBase):
             effort=self.permission.get("effort", "low"),  # type: ignore[arg-type]
             mcp_servers=self.mcp_servers or {},
         )
-        async with ClaudeSDKClient(options=options) as client:
-            await client.query(self.initial_prompt)
-            await self._converse(client)
+        try:
+            async with ClaudeSDKClient(options=options) as client:
+                await client.query(self.initial_prompt)
+                await self._converse(client)
+        finally:
+            self._close_input_queue()
+
+    def _close_input_queue(self) -> None:
+        if self.input_queue is not None:
+            remaining = self.input_queue.close()
+            if remaining:
+                self.state.append_log(f"[入力破棄] 終了時の未配信指示 {remaining}件")
+
+    def stop(self) -> None:
+        super().stop()
+        self._close_input_queue()
 
     async def _converse(self, client: ClaudeSDKClient) -> None:
         turns = 0
@@ -129,16 +159,29 @@ class ClaudeRunner(ApprovalRunnerBase):
                 )
                 return
             last_text = self._read_turn(await self._collect_turn(client))
-            if not last_text:
-                return
             reply: str | None
-            if not plan_approved:
+            instruction = None
+            if not plan_approved and last_text:
                 reply = await self._request_plan_approval(last_text)
                 plan_approved = self.state.snapshot()["approved_plan"] is not None
+                instruction = await self._human_instruction()
             else:
-                reply = await self._conversational_reply(last_text)
+                instruction = await self._human_instruction()
+                reply = instruction
+                if instruction is None and last_text:
+                    reply = await self._conversational_reply(last_text)
+                    instruction = await self._human_instruction()
+            if instruction is not None:
+                # 計画承認や自動応答の返答を失わず、指示と1つのメッセージにまとめて渡す。
+                reply = (
+                    instruction
+                    if reply is None or reply == instruction
+                    else f"{reply}\n\n{instruction}"
+                )
             if reply is None:
-                return
+                reply = await self._human_instruction(wait=True)
+                if reply is None:
+                    return
             if turns >= self._MAX_CONVERSATIONAL_TURNS:
                 # 勝手に打ち切らず人間に継続可否を確認する(base.py参照)
                 if not await self._confirm_continue_conversation():

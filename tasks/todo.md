@@ -3,6 +3,19 @@
 2. 完了したら `[x]` にする
 3. セクションが全て完了したら、セクションごと削除してよい
 
+## spec: wrapped入力キュー・API認証（2026-10-07、承認済み）
+- [x] FR-21/FR-22と既存のセッション・runner・承認処理を確認する
+- [x] 新規テストのRedを確認し、Claude専用の有界FIFOを実装する
+- [x] 承認待ち後のターン境界配信、orchestrator限定idle待機、停止と残件破棄を実装する
+- [x] 対象POSTの任意Bearer認証とREADMEを追加する
+- [x] 境界・認証・承認待ち・件数・文字数の変異を回帰テストが検出することを確認する
+- [x] 全tests・Ruff format/check・mypyを実行する（Git操作・依存追加なし）
+- [ ] 全tests成功の完了基準を満たす（既存12件が一時ディレクトリACL拒否。TEMPをrepo内へ移しても再現）
+- 最終検証: 313件中301 passed / 12 failed、206 subtests passed、pytest cache警告2件。新規25件は全件成功。Ruff checkは成功（探索アクセス拒否警告あり）、formatは36 files成功、mypyは24 source files成功。
+- 変異検証: HTTP境界検査を無効化、compare_digestを常時true化、承認Future待ちを除去、件数・文字数上限を拡大した実装に対し、該当回帰テストがAssertionErrorで失敗することを確認（実行時patch、終了時に自動復元）。
+- 判断: 絶対ターン上限と人間が終了を選んだ会話上限は従来の停止を維持。正常終了・明示停止で残件破棄、終了済みセッションは再利用しない。
+- 未確認: 実Claude/Ollama・AITuberランチャー接続は指定どおり未実行。既存12件のアクセス拒否の詳細原因は未確定。
+
 ## spec: orchestrator MCP dispatch（2026-10-06、承認済み）
 - [x] Red: 偽SessionManagerによるlist/send/read境界テスト、ClaudeRunnerのMCP受け渡しテスト、system prompt確認を追加して失敗を確認する
 - [x] orchestration.pyにセッション操作関数と3つのSDK MCPツールを実装し、自己送信・入力済wrapped・文字数等を制約する

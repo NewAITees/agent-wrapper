@@ -1,4 +1,14 @@
 # Lessons - 過去の失敗と学び
+## INDEX（2026-10-07追加項目）
+| カテゴリ | 説明 | 開始行 | 件数 |
+|----------|------|--------|------|
+| quality | wrapped入力キュー検証の注意 | 7 | 1 |
+
+## quality — wrapped入力キュー検証（2026-10-07）
+- **症状**: 全testsの既存12件がTemporaryDirectory内の読み書きでPermissionError。repo内TEMPでも再現。
+- **原因**: 一時ディレクトリのアクセス拒否は確認済み。ACL・サンドボックスの詳細原因は未確定。今回のキュー・認証の追加テストとは区別する。
+- **対策**: 実物のSessionManager/WrappedSession/ApprovalBrokerとメモリ内HTTPハンドラーを使う。既存テストを緩和せず、ACL障害と実装失敗を分けて報告する。非同期モックはasync関数をside_effectにし、未awaitのcoroutineを返す通常lambdaを使わない。
+
 ## 記録ルール
 - バグを解決したら、ここにパターンと対策を追記する
 - 設計上の判断ミスや整合性の注意点も記録する

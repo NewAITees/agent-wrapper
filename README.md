@@ -28,6 +28,25 @@ agent-wrapper-server
 対話プロンプトに人間が直接答える方式(raw-pty)。既存の`agent-wrapper`(承認ゲート付き)
 とは別系統のツールとして併存している。
 
+## 入力・承認APIの認証（任意）
+
+サーバー起動前に環境変数 `AGENT_WRAPPER_API_TOKEN` へ非空のトークンを設定すると、
+POST `/send/*` と POST `/approvals/*/respond` は
+`Authorization: Bearer <token>` ヘッダーを要求する。未設定・空文字なら認証を行わない。
+GETとその他のAPIはこの認証の対象外で、既存のHost・Origin等の境界検査は引き続き適用される。
+
+PowerShellでは、秘密を保存済みの環境から読み込んで起動する（実際のトークンを文書・ログへ記載しない）。
+
+```powershell
+$env:AGENT_WRAPPER_API_TOKEN = [Environment]::GetEnvironmentVariable("AGENT_WRAPPER_API_TOKEN", "User")
+agent-wrapper-server
+```
+
+AITuber側のランチャーは同じトークンを送信側に渡し、追加指示・承認応答へ上記ヘッダーを付ける必要がある。
+ランチャーとの実接続は未確認（環境依存）。認証を有効にした場合、送信するブラウザ等のクライアントもヘッダーが必要となる。
+認証なしではローカルプロセスが入力や承認応答を送信できる。loopbackやブラウザ由来のヘッダー検査だけでは本人確認にならない。
+この認証を有効にしても、対象外APIへのアクセス制限は追加されない。
+
 ## 動かし方
 
 対象プロジェクトのディレクトリに `cd` してから起動する。
