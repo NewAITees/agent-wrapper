@@ -71,14 +71,15 @@ class IdleWaitWiringTests(unittest.TestCase):
             session.submit("task\r")
         return dict(runner_type.call_args.kwargs)
 
-    def test_only_orchestrator_waits_for_more_instructions(self):
+    def test_only_role_sessions_wait_for_more_instructions(self):
         from agent_wrapper.input_queue import IDLE_WAIT_SECONDS
 
-        self.assertEqual(
-            self._runner_kwargs("orchestrator")["idle_wait_seconds"], IDLE_WAIT_SECONDS
-        )
-        for name in ("worker", "planner", "tester"):
-            self.assertEqual(self._runner_kwargs(name)["idle_wait_seconds"], 0)
+        for name in ("orchestrator", "worker", "planner", "tester", "reviewer"):
+            self.assertEqual(
+                self._runner_kwargs(name)["idle_wait_seconds"], IDLE_WAIT_SECONDS
+            )
+        # 名前が未知の汎用セッションは、作業が終われば従来どおり終了する。
+        self.assertEqual(self._runner_kwargs("custom-helper")["idle_wait_seconds"], 0)
 
 
 class MultipleEnterAndWebSocketTests(unittest.IsolatedAsyncioTestCase):

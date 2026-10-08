@@ -134,10 +134,16 @@ class ParseOllamaTagsTests(unittest.TestCase):
 
 class SystemPromptForTests(unittest.TestCase):
     def test_known_role_returns_preset(self):
-        self.assertEqual(system_prompt_for("worker"), ROLE_SYSTEM_PROMPTS["worker"])
+        # 役割のプリセットに、orchestratorからの指示の説明が追記される(orchestratorは追記なし)。
+        self.assertTrue(
+            system_prompt_for("worker").startswith(ROLE_SYSTEM_PROMPTS["worker"])
+        )
+        self.assertEqual(
+            system_prompt_for("orchestrator"), ROLE_SYSTEM_PROMPTS["orchestrator"]
+        )
 
     def test_known_role_is_case_insensitive(self):
-        self.assertEqual(system_prompt_for("Worker"), ROLE_SYSTEM_PROMPTS["worker"])
+        self.assertEqual(system_prompt_for("Worker"), system_prompt_for("worker"))
 
     def test_unknown_name_gets_generic_prompt_mentioning_name(self):
         prompt = system_prompt_for("custom-role")

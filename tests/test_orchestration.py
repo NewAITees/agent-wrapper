@@ -30,6 +30,10 @@ class FakeSession:
     def write(self, text):
         self.writes.append(text)
 
+    def submit(self, text, label="配信者の指示"):
+        self.writes.append(text)
+        return {"ok": True, "status": "started"}
+
     def output_text(self, tail=None):
         return self.output[-tail:] if tail else self.output
 
@@ -261,16 +265,20 @@ class RealWrappedSessionTests(unittest.IsolatedAsyncioTestCase):
         manager.sessions["worker"] = worker
         return manager, worker
 
-    async def test_list_sessions_reports_running_wrapped_as_not_accepting_input(self):
+    async def test_list_sessions_reports_running_claude_wrapped_as_accepting_input(
+        self,
+    ):
+        # 作業中・待機中のclaude wrappedは、入力キューで追加の指示を受け付ける。
         manager, _ = self._manager_with_running_worker()
         result = await list_sessions(manager, "orchestrator")
         self.assertEqual(result[0]["mode"], "wrapped")
-        self.assertFalse(result[0]["accepts_input"])
+        self.assertTrue(result[0]["accepts_input"])
 
-    async def test_send_to_running_real_wrapped_session_is_rejected(self):
-        manager, _ = self._manager_with_running_worker()
+    async def test_send_to_running_real_claude_wrapped_session_is_queued(self):
+        manager, worker = self._manager_with_running_worker()
         result = await send_to_session(manager, "orchestrator", "worker", "追加指示")
-        self.assertTrue(result.startswith("Error"))
+        self.assertTrue(result.startswith("Success"), result)
+        self.assertEqual(worker.input_queue.take_nowait(), "追加指示")
 
 
 class OrchestratorInstructionGuidanceTests(unittest.TestCase):

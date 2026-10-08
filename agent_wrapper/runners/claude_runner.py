@@ -33,6 +33,7 @@ claude-agent-sdk経由で実際のClaude Codeを動かすrunner。
 """
 
 import fnmatch
+from collections.abc import Callable
 from typing import Any
 
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, HookMatcher
@@ -50,7 +51,7 @@ from claude_agent_sdk.types import (
 )
 
 from .. import rules
-from ..input_queue import WrappedInputQueue
+from ..input_queue import HUMAN_LABEL, WrappedInputQueue
 from .base import ApprovalRunnerBase
 from ..wrapper import Notifier, SharedState
 from .tool_describe import GATED_TOOLS, describe_tool_call
@@ -86,23 +87,39 @@ class ClaudeRunner(ApprovalRunnerBase):
         mcp_servers: dict[str, McpServerConfig] | None = None,
         input_queue: WrappedInputQueue | None = None,
         idle_wait_seconds: float = 0,
+        on_idle: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(prompt, cwd, state, ollama_model, notifier, permission)
         self.mcp_servers = mcp_servers
         self.input_queue = input_queue
         self.idle_wait_seconds = idle_wait_seconds
+        # 作業が一段落して入力待ちに入るとき(orchestratorへの完了通知に使う)に呼ぶ。
+        self.on_idle = on_idle
 
     async def _human_instruction(self, *, wait: bool = False) -> str | None:
         if self.input_queue is None or self._stop_requested.is_set():
             return None
         text = self.input_queue.take_nowait()
         if text is None and wait and self.idle_wait_seconds > 0:
-            self.state.append_log("[入力待機] 配信者の追加指示を待っています")
+            self.state.append_log("[入力待機] 追加の指示を待っています")
+            self._notify_idle()
             text = await self.input_queue.wait(self.idle_wait_seconds)
         if text is None or self._stop_requested.is_set():
             return None
-        self.state.append_log(f"[人間指示] {text}")
-        return f"[配信者の指示] {text}"
+        label = getattr(text, "label", HUMAN_LABEL)
+        prefix = "[人間指示]" if label == HUMAN_LABEL else f"[{label}]"
+        self.state.append_log(f"{prefix} {text}")
+        return f"[{label}] {text}"
+
+    def _notify_idle(self) -> None:
+        if self.on_idle is None:
+            return
+        try:
+            self.on_idle()
+        except (
+            Exception
+        ) as error:  # 通知の失敗でセッションを止めない。失敗は隠さず記録する。
+            self.state.append_log(f"(入力待機の通知に失敗しました: {error})")
 
     async def _run_async(self) -> None:
         # allowed_toolsは一致した呼び出しをcan_use_toolより先に自動許可するため、

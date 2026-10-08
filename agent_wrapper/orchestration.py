@@ -10,6 +10,7 @@ from claude_agent_sdk import create_sdk_mcp_server, tool
 from claude_agent_sdk.types import McpSdkServerConfig
 
 from . import rules
+from .input_queue import ORCHESTRATOR_LABEL
 
 
 _ORCHESTRATOR_APPROVABLE_KINDS = frozenset(
@@ -215,7 +216,10 @@ def _session_input_ready(session: Any) -> bool:
     # modeが不明なセッションも拒否する(fail-closed)。
     if not session.is_alive():
         return False
-    return getattr(session, "mode", None) == "wrapped" and session._runner is None
+    if getattr(session, "mode", None) != "wrapped":
+        return False
+    # 未起動なら最初の指示を、作業中・待機中でも入力キューを持つclaudeなら追加の指示を受け付ける。
+    return session._runner is None or getattr(session, "input_queue", None) is not None
 
 
 async def list_sessions(
@@ -258,9 +262,17 @@ async def send_to_session(
             f"Error: {name} はwrappedセッションではないため、指示を送れません"
             "(承認Brokerを通らない入力は許可しない)。"
         )
-    if session._runner is not None:
-        return f"Error: {name} はすでに作業中。入力は受け付けられない状態です。"
-    session.write(text + "\r")
+    if session._runner is not None and getattr(session, "input_queue", None) is None:
+        return f"Error: {name} はすでに作業中で、追加の入力を受け付けられない種類のセッションです。"
+    try:
+        result = session.submit(text + "\r", label=ORCHESTRATOR_LABEL)
+    except ValueError as error:
+        return f"Error: {name} へ送れませんでした({error})。"
+    if result.get("status") == "queued":
+        return (
+            f"Success: instruction queued for {name} at position {result.get('position')} "
+            "(相手の作業の区切りで届きます)."
+        )
     return f"Success: instruction sent to {name}."
 
 
