@@ -9,6 +9,7 @@ rules/utility AI/人間という判定層から同じ境界を利用できるよ
 """
 
 import datetime
+import logging
 import threading
 import uuid
 from collections.abc import Callable
@@ -16,6 +17,8 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from .aituber_push import aituber_pusher, summarize_approval
+
+_LOGGER = logging.getLogger(__name__)
 
 ApprovalKind = Literal["permission", "specification_question"]
 ApprovalAction = Literal["approve", "explain", "deny"]
@@ -109,6 +112,11 @@ class ApprovalBroker:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._requests: list[ApprovalRequest] = []
+        self._listeners: list[Callable[[ApprovalRequest], None]] = []
+
+    def add_listener(self, listener: Callable[[ApprovalRequest], None]) -> None:
+        """新しいpending要求が積まれるたびに呼ばれる(統合された重複では呼ばない)。"""
+        self._listeners.append(listener)
 
     def submit(
         self,
@@ -167,6 +175,11 @@ class ApprovalBroker:
             created.session_id,
             summarize_approval(created.action, created.resource),
         )
+        for listener in list(self._listeners):
+            try:
+                listener(created)
+            except Exception:  # 通知の失敗で承認の受付を止めない。失敗は記録する。
+                _LOGGER.warning("approval listener failed", exc_info=True)
         return created
 
     def pending(self, session_id: str | None = None) -> list[ApprovalRequest]:

@@ -37,6 +37,7 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 import tkinter
 import webbrowser
 from pathlib import Path
@@ -55,7 +56,7 @@ from claude_agent_sdk.types import McpServerConfig
 
 from . import ollama_client, rules
 from .aituber_push import aituber_pusher, poll_inbox
-from .approval import ApprovalBroker, ApprovalDecision
+from .approval import ApprovalBroker, ApprovalDecision, ApprovalRequest
 from .approval_adapters import OpenCodePermissionAdapter
 from .input_queue import (
     HUMAN_LABEL,
@@ -191,6 +192,9 @@ ROLE_SYSTEM_PROMPTS: dict[str, str] = {
         "\n[システム通知] で始まるメッセージは、agent-wrapperからの自動通知"
         "(workerの作業が一段落した・終了したなど)で、配信者の指示ではありません。"
         "read_session_outputで結果を確認し、必要なら追加の指示を送るか、人間に報告してください。"
+        "\n[システム通知] で「承認待ちが届きました」と知らされたら、list_pending_approvalsで確認し、"
+        "approvable_by_orchestratorがtrueの簡単で安全なものはrespond_to_approvalで承認してください。"
+        "重要なものや迷うものは、内容とリスクを人間に説明してください。"
         "\n承認待ちはlist_pending_approvalsで確認してください。"
         "respond_to_approvalでapproveできるのは、approvable_by_orchestratorがtrueで、"
         "作業フォルダ内の読み取りや小さな編集など簡単で影響が小さい要求だけです。"
@@ -1043,10 +1047,20 @@ class WrappedSession:
 class SessionManager:
     """1つの作業フォルダに対する全ターミナルのライフサイクルを管理する。"""
 
-    def __init__(self, broker: ApprovalBroker | None = None) -> None:
+    # 同じセッションの承認待ち通知を、この間はまとめる(orchestratorは起きた時にまとめて一覧する)。
+    APPROVAL_NOTICE_COALESCE_SECONDS = 20.0
+
+    def __init__(
+        self,
+        broker: ApprovalBroker | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self.sessions: dict[str, Session | WrappedSession] = {}
         self._broadcast_tasks: dict[str, asyncio.Task[None]] = {}
         self.approval_broker = broker or ApprovalBroker()
+        self._clock = clock
+        self._approval_notice_times: dict[str, float] = {}
+        self.approval_broker.add_listener(self._on_approval_submitted)
         self.cwd: str | None = None
         self._external_session_ids: dict[str, set[str]] = {}
         self._external_session_ids_lock = threading.Lock()
@@ -1119,6 +1133,18 @@ class SessionManager:
 
         return notify
 
+    def _on_approval_submitted(self, request: ApprovalRequest) -> None:
+        """役割セッションに承認待ちが届いたら、orchestratorへ通知する(同じセッションはまとめる)。"""
+        session_id = request.session_id
+        if session_id == "orchestrator" or session_id not in self.sessions:
+            return
+        now = self._clock()
+        last = self._approval_notice_times.get(session_id)
+        if last is not None and now - last < self.APPROVAL_NOTICE_COALESCE_SECONDS:
+            return
+        if self.notify_orchestrator(session_id, "approval"):
+            self._approval_notice_times[session_id] = now
+
     def notify_orchestrator(self, source_name: str, kind: str) -> bool:
         """役割セッションの一段落(idle)・終了(stopped)を、稼働中のorchestratorへ通知する。
 
@@ -1129,7 +1155,14 @@ class SessionManager:
         target = self.sessions.get("orchestrator")
         if not isinstance(target, WrappedSession):
             return False
-        if kind == "idle":
+        if kind == "approval":
+            text = (
+                f"{source_name} に承認待ちが届きました。list_pending_approvals で確認し、"
+                "簡単で安全なもの(approvable_by_orchestrator が true)は respond_to_approval で"
+                "承認してください。重要なものや迷うものは、内容とリスクを人間に説明して"
+                "ください(自分では承認しない)。"
+            )
+        elif kind == "idle":
             text = (
                 f"{source_name} の作業が一段落し、入力待ちになりました。"
                 "read_session_output で結果を確認し、必要なら send_to_session で"
